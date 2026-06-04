@@ -1,0 +1,28 @@
+# CMake build files
+/build/
+/CMakeFiles/
+/CMakeCache.txt
+/cmake_install.cmake
+/Makefile
+/install_manifest.txt
+
+# Object files & binaries
+*.o
+*.obj
+*.so
+*.a
+*.lib
+*.dll
+*.exe
+BeGin
+
+# Python temporary files (from scraping or other utilities)
+__pycache__/
+*.pyc
+*.pyo
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*~
