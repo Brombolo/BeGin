@@ -11,10 +11,14 @@
 #include <String.h>
 
 #include <filesystem>
+#include <fstream>
+#include <iomanip>
+#include <chrono>
 
 MainWindow::MainWindow()
     : BWindow(BRect(100, 100, 800, 600), "BeGin", B_TITLED_WINDOW, B_AUTO_UPDATE_SIZE_LIMITS),
       fMenuBar(nullptr),
+      fWarningBanner(nullptr),
       fSidebarView(nullptr),
       fCardView(nullptr),
       fEmptyView(nullptr),
@@ -75,7 +79,7 @@ bool MainWindow::QuitRequested()
 {
     // Memory Safety: unload all modules dynamically and cleanly
     for (auto& loaded : fModules) {
-        // 1. Remove and destroy interface elements
+        // 1. Remove and destroy interface elements if they are still active
         if (loaded.view != nullptr) {
             fCardView->RemoveChild(loaded.view);
             delete loaded.view;
@@ -85,7 +89,7 @@ bool MainWindow::QuitRequested()
             delete loaded.button;
         }
 
-        // 2. Remove module from window's BHandler registry and delete it
+        // 2. Remove module from window's BHandler registry and delete it if not already done
         if (loaded.instance != nullptr) {
             RemoveHandler(loaded.instance);
             delete loaded.instance;
@@ -111,6 +115,9 @@ void MainWindow::_InitInterface()
     modulesMenu->AddItem(new BMenuItem("Carica modulo...", new BMessage(MSG_LOAD_MODULE_PROMPT), 'L'));
     fMenuBar->AddItem(modulesMenu);
 
+    // Red warning banner for deactivated modules
+    fWarningBanner = new WarningBanner("warning_banner");
+
     // Left navigation column (vertical sidebar)
     fSidebarView = new BGroupView(B_VERTICAL, 5);
     fSidebarView->SetViewColor(ui_color(B_PANEL_BACKGROUND_COLOR));
@@ -126,6 +133,7 @@ void MainWindow::_InitInterface()
     // Layout configuration using standard BLayoutBuilder
     BLayoutBuilder::Group<>(this, B_VERTICAL, 0)
         .Add(fMenuBar)
+        .Add(fWarningBanner)         // Add banner below the menu bar
         .AddSplit(B_HORIZONTAL, 2.0f) // horizontal split view
             .Add(fSidebarView, 1.0f)  // left sidebar column
             .Add(fCardView, 4.0f)     // right content card area
@@ -228,6 +236,7 @@ void MainWindow::_LoadModule(const entry_ref& ref)
     loaded.button = nullptr;
     loaded.view = nullptr;
     loaded.cardIndex = -1;
+    loaded.disabled = false;
 
     _AddModuleToUI(loaded);
     fModules.push_back(loaded);
@@ -269,10 +278,167 @@ void MainWindow::_SelectModule(const BString& signature)
 {
     for (const auto& mod : fModules) {
         if (mod.instance != nullptr && signature == mod.instance->Signature()) {
-            if (fCardView->CardLayout() != nullptr) {
+            if (!mod.disabled && fCardView->CardLayout() != nullptr) {
                 fCardView->CardLayout()->SetVisibleItem(mod.cardIndex);
             }
             return;
+        }
+    }
+}
+
+void MainWindow::DispatchMessage(BMessage* message, BHandler* handler)
+{
+    BaseModule* module = _FindModuleForHandler(handler);
+    if (module != nullptr) {
+        // Block processing if the module has already been disabled
+        for (const auto& mod : fModules) {
+            if (mod.instance == module) {
+                if (mod.disabled) {
+                    return; // Ignore message
+                }
+                break;
+            }
+        }
+
+        // Measure execution time and catch C++ exceptions (Watchdog & Exception Trap)
+        bigtime_t startTime = system_time();
+        try {
+            BWindow::DispatchMessage(message, handler);
+        } catch (const std::exception& e) {
+            _DisableModule(module, (BString("Eccezione C++: ") << e.what()).String());
+            return;
+        } catch (...) {
+            _DisableModule(module, "Eccezione C++ sconosciuta");
+            return;
+        }
+
+        bigtime_t duration = system_time() - startTime;
+        if (duration > 1000000) { // More than 1 second (1,000,000 microseconds)
+            _DisableModule(module, "Watchdog: Thread UI bloccato per >1s");
+        }
+    } else {
+        BWindow::DispatchMessage(message, handler);
+    }
+}
+
+BaseModule* MainWindow::_FindModuleForHandler(BHandler* handler)
+{
+    if (handler == nullptr) return nullptr;
+
+    // Check if direct handler is a module
+    for (const auto& mod : fModules) {
+        if (mod.instance == handler) {
+            return mod.instance;
+        }
+    }
+
+    // Check if handler is a BView that resides within a module's interface view
+    BView* view = dynamic_cast<BView*>(handler);
+    while (view != nullptr) {
+        for (const auto& mod : fModules) {
+            if (mod.view == view) {
+                return mod.instance;
+            }
+        }
+        view = view->Parent();
+    }
+
+    return nullptr;
+}
+
+void MainWindow::_DisableModule(BaseModule* module, const char* reason)
+{
+    if (module == nullptr) return;
+
+    for (auto& mod : fModules) {
+        if (mod.instance == module) {
+            if (mod.disabled) return; // Already disabled
+
+            mod.disabled = true;
+
+            // 1. Write debug diagnostics log
+            _WriteDeactivationLog(module, reason);
+
+            // 2. Alert user via warning banner
+            if (fWarningBanner != nullptr) {
+                fWarningBanner->AddDeactivatedModule(module->Name(), reason);
+            }
+
+            // Lock Looper to ensure safe UI manipulation from current dispatch
+            if (Lock()) {
+                // 3. Fallback visible card to EmptyView if the disabled module was shown
+                if (fCardView->CardLayout() != nullptr && fCardView->CardLayout()->VisibleIndex() == mod.cardIndex) {
+                    fCardView->CardLayout()->SetVisibleItem((int32)0);
+                }
+
+                // 4. Detach UI components and delete them
+                if (mod.view != nullptr) {
+                    fCardView->RemoveChild(mod.view);
+                    delete mod.view;
+                    mod.view = nullptr;
+                }
+                if (mod.button != nullptr) {
+                    fSidebarView->RemoveChild(mod.button);
+                    delete mod.button;
+                    mod.button = nullptr;
+                }
+
+                // 5. Unregister looper handler
+                RemoveHandler(mod.instance);
+
+                // 6. Delete module instance
+                delete mod.instance;
+                mod.instance = nullptr;
+
+                // 7. Unload dynamic library
+                unload_add_on(mod.image);
+
+                Unlock();
+            }
+
+            // Show standard modal alert too
+            BString alertMsg;
+            alertMsg << "Il modulo '" << module->Name() << "' è stato disattivato per motivi di sicurezza.\n\nCausa: " << reason;
+            BAlert* alert = new BAlert("Modulo Disattivato", alertMsg.String(), "OK",
+                                       nullptr, nullptr, B_WIDTH_AS_USUAL, B_WARNING_ALERT);
+            alert->Go();
+            
+            break;
+        }
+    }
+}
+
+void MainWindow::_WriteDeactivationLog(BaseModule* module, const char* reason)
+{
+    BPath logsPath;
+    if (find_directory(B_USER_SETTINGS_DIRECTORY, &logsPath) == B_OK) {
+        logsPath.Append("BeGin/logs");
+        create_directory(logsPath.Path(), 0777);
+        logsPath.Append("deactivations.log");
+
+        std::ofstream logFile(logsPath.Path(), std::ios::app);
+        if (logFile.is_open()) {
+            auto now = std::chrono::system_clock::now();
+            auto timeT = std::chrono::system_clock::to_time_t(now);
+            
+            logFile << "========================================\n";
+            logFile << "DISATTIVAZIONE MODULO: " << std::put_time(std::localtime(&timeT), "%Y-%m-%d %H:%M:%S") << "\n";
+            logFile << "Nome:                  " << module->Name() << "\n";
+            logFile << "Firma (Signature):     " << module->Signature() << "\n";
+            logFile << "Causa della Scelta:    " << reason << "\n";
+            logFile << "----------------------------------------\n";
+            logFile << "CONSIGLI PER IL DEBUG:\n";
+            if (strcmp(reason, "Watchdog: Thread UI bloccato per >1s") == 0) {
+                logFile << "  * Il modulo esegue un loop infinito o calcoli pesanti nel thread principale.\n";
+                logFile << "  * Sposta le operazioni bloccanti in un thread separato (std::thread o BThread).\n";
+            } else if (strncmp(reason, "Eccezione C++:", 14) == 0) {
+                logFile << "  * Il modulo ha sollevato un'eccezione standard non gestita.\n";
+                logFile << "  * Controlla i punti in cui allochi risorse, dereferenzi puntatori o accedi a indici.\n";
+            } else {
+                logFile << "  * Si è verificato un errore generico o un'eccezione sconosciuta.\n";
+            }
+            logFile << "========================================\n\n";
+            logFile.close();
         }
     }
 }

@@ -14,6 +14,7 @@
 
 #include "BaseModule.h"
 #include "EmptyView.h"
+#include "WarningBanner.h"
 
 // Message constants
 enum {
@@ -28,6 +29,7 @@ struct LoadedModule {
     BButton* button;
     BView* view;
     int32 cardIndex;
+    bool disabled; // Flag indicating if module was disabled due to failure
 };
 
 class MainWindow : public BWindow {
@@ -36,6 +38,7 @@ public:
     virtual ~MainWindow();
 
     virtual void MessageReceived(BMessage* message) override;
+    virtual void DispatchMessage(BMessage* message, BHandler* handler) override;
     virtual bool QuitRequested() override;
 
 private:
@@ -45,8 +48,14 @@ private:
     void _AddModuleToUI(LoadedModule& loaded);
     void _SelectModule(const BString& signature);
     BPath _GetModulesDirectory();
+    
+    // Fault Tolerance Helpers
+    BaseModule* _FindModuleForHandler(BHandler* handler);
+    void _DisableModule(BaseModule* module, const char* reason);
+    void _WriteDeactivationLog(BaseModule* module, const char* reason);
 
     BMenuBar*           fMenuBar;
+    WarningBanner*      fWarningBanner;
     BGroupView*         fSidebarView;
     BCardView*          fCardView;
     EmptyView*          fEmptyView;

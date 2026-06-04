@@ -26,3 +26,7 @@ __pycache__/
 .idea/
 *.swp
 *~
+
+# Excluded project assets & docs
+/API/
+/specifiche_architettura_haiku.md
