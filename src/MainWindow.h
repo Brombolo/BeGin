@@ -9,8 +9,10 @@
 #include <CardView.h>
 #include <FilePanel.h>
 #include <Path.h>
+#include <NodeMonitor.h>
 #include <image.h>
 #include <vector>
+#include <atomic>
 
 #include "BaseModule.h"
 #include "EmptyView.h"
@@ -26,10 +28,12 @@ enum {
 struct LoadedModule {
     image_id image;
     BaseModule* instance;
-    BButton* button;
+    BView* sidebarView; // The composite box containing the icon and label
     BView* view;
     int32 cardIndex;
-    bool disabled; // Flag indicating if module was disabled due to failure
+    bool disabled;
+    BString fileName;  // Original file name (e.g. TaskManager.so)
+    BString signature; // Module unique signature
 };
 
 class MainWindow : public BWindow {
@@ -44,7 +48,10 @@ public:
 private:
     void _InitInterface();
     void _InitModulesDirectory();
+    void _LoadExistingModules();
     void _LoadModule(const entry_ref& ref);
+    void _UnloadModuleByName(const char* name);
+    void _UnloadModule(LoadedModule& mod, bool dueToError, const char* reason);
     void _AddModuleToUI(LoadedModule& loaded);
     void _SelectModule(const BString& signature);
     BPath _GetModulesDirectory();
@@ -54,6 +61,13 @@ private:
     void _DisableModule(BaseModule* module, const char* reason);
     void _WriteDeactivationLog(BaseModule* module, const char* reason);
 
+    // Watchdog Thread Methods
+    static int32 _WatchdogEntry(void* data);
+    int32 _WatchdogLoop();
+
+    // Signal handler registration
+    static void _SignalHandler(int sig);
+
     BMenuBar*           fMenuBar;
     WarningBanner*      fWarningBanner;
     BGroupView*         fSidebarView;
@@ -62,6 +76,16 @@ private:
     BFilePanel*         fFilePanel;
 
     std::vector<LoadedModule> fModules;
+
+    // Node Monitor
+    node_ref fModulesDirNodeRef;
+
+    // Watchdog variables
+    thread_id                 fWatchdogThread;
+    thread_id                 fLooperThread;
+    std::atomic<BaseModule*>  fCurrentDispatchModule;
+    std::atomic<bigtime_t>    fDispatchStartTime;
+    std::atomic<bool>         fWatchdogRunning;
 };
 
 #endif // MAIN_WINDOW_H

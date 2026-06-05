@@ -10,6 +10,7 @@
 #include <Entry.h>
 #include <Path.h>
 #include <String.h>
+#include <StringView.h>
 
 #include <filesystem>
 #include <fstream>
@@ -23,14 +24,64 @@ MainWindow::MainWindow()
       fSidebarView(nullptr),
       fCardView(nullptr),
       fEmptyView(nullptr),
-      fFilePanel(nullptr)
+      fFilePanel(nullptr),
+      fWatchdogThread(-1),
+      fLooperThread(-1),
+      fCurrentDispatchModule(nullptr),
+      fDispatchStartTime(0),
+      fWatchdogRunning(true)
 {
+    fLooperThread = Thread();
+
+    // Register POSIX signal handler for Watchdog interrupts
+    struct sigaction sa;
+    sa.sa_handler = _SignalHandler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+    sigaction(SIGUSR1, &sa, nullptr);
+
+    // Initialize modules directory & scan for existing add-ons
     _InitModulesDirectory();
     _InitInterface();
+
+    // Start watching the modules folder for live updates
+    BPath path = _GetModulesDirectory();
+    BDirectory dir(path.Path());
+    if (dir.InitCheck() == B_OK) {
+        dir.GetNodeRef(&fModulesDirNodeRef);
+        watch_node(&fModulesDirNodeRef, B_WATCH_DIRECTORY, this);
+    }
+
+    // Spawn and run the watchdog thread
+    fWatchdogThread = spawn_thread(_WatchdogEntry, "watchdog_thread", B_NORMAL_PRIORITY, this);
+    if (fWatchdogThread >= 0) {
+        resume_thread(fWatchdogThread);
+    }
+
+    // Load modules that are already present in the folder at startup
+    _LoadExistingModules();
+
+    // Automatically select the first successfully loaded module
+    for (const auto& mod : fModules) {
+        if (!mod.disabled && mod.instance != nullptr) {
+            _SelectModule(mod.signature);
+            break;
+        }
+    }
 }
 
 MainWindow::~MainWindow()
 {
+    // Stop directory monitoring
+    stop_watching(this);
+
+    // Terminate watchdog thread
+    fWatchdogRunning.store(false);
+    if (fWatchdogThread >= 0) {
+        status_t exitVal;
+        wait_for_thread(fWatchdogThread, &exitVal);
+    }
+
     // Clean up FilePanel
     delete fFilePanel;
 }
@@ -70,6 +121,35 @@ void MainWindow::MessageReceived(BMessage* message)
             break;
         }
 
+        case B_NODE_MONITOR:
+        {
+            int32 opcode;
+            if (message->FindInt32("opcode", &opcode) == B_OK) {
+                if (opcode == B_ENTRY_CREATED) {
+                    const char* name;
+                    dev_t device;
+                    ino_t directory;
+                    if (message->FindString("name", &name) == B_OK &&
+                        message->FindInt32("device", &device) == B_OK &&
+                        message->FindInt64("directory", &directory) == B_OK) {
+                        
+                        BString filename(name);
+                        if (filename.EndsWith(".so")) {
+                            entry_ref ref(device, directory, name);
+                            // Execute load
+                            _LoadModule(ref);
+                        }
+                    }
+                } else if (opcode == B_ENTRY_REMOVED) {
+                    const char* name;
+                    if (message->FindString("name", &name) == B_OK) {
+                        _UnloadModuleByName(name);
+                    }
+                }
+            }
+            break;
+        }
+
         default:
             BWindow::MessageReceived(message);
             break;
@@ -78,26 +158,12 @@ void MainWindow::MessageReceived(BMessage* message)
 
 bool MainWindow::QuitRequested()
 {
+    // Stop directory monitoring to prevent incoming messages during shutdown
+    stop_watching(this);
+
     // Memory Safety: unload all modules dynamically and cleanly
     for (auto& loaded : fModules) {
-        // 1. Remove and destroy interface elements if they are still active
-        if (loaded.view != nullptr) {
-            fCardView->RemoveChild(loaded.view);
-            delete loaded.view;
-        }
-        if (loaded.button != nullptr) {
-            fSidebarView->RemoveChild(loaded.button);
-            delete loaded.button;
-        }
-
-        // 2. Remove module from window's BHandler registry and delete it if not already done
-        if (loaded.instance != nullptr) {
-            RemoveHandler(loaded.instance);
-            delete loaded.instance;
-        }
-
-        // 3. Unload the add-on from memory
-        unload_add_on(loaded.image);
+        _UnloadModule(loaded, false, nullptr);
     }
     fModules.clear();
 
@@ -119,9 +185,13 @@ void MainWindow::_InitInterface()
     // Red warning banner for deactivated modules
     fWarningBanner = new WarningBanner("warning_banner");
 
-    // Left navigation column (vertical sidebar)
-    fSidebarView = new BGroupView(B_VERTICAL, 5);
+    // Left navigation column (vertical sidebar) with fixed width
+    fSidebarView = new BGroupView(B_VERTICAL, 10);
     fSidebarView->SetViewColor(ui_color(B_PANEL_BACKGROUND_COLOR));
+    
+    // Set Sidebar fixed width to 90px
+    fSidebarView->SetExplicitMinSize(BSize(90, 0));
+    fSidebarView->SetExplicitMaxSize(BSize(90, 10000));
     
     // Add glue so module buttons align to the top of the sidebar
     fSidebarView->GroupLayout()->AddItem(BSpaceLayoutItem::CreateGlue());
@@ -156,6 +226,21 @@ void MainWindow::_InitModulesDirectory()
     create_directory(path.Path(), 0777);
 }
 
+void MainWindow::_LoadExistingModules()
+{
+    BPath path = _GetModulesDirectory();
+    BDirectory dir(path.Path());
+    if (dir.InitCheck() != B_OK) return;
+
+    entry_ref ref;
+    while (dir.GetNextRef(&ref) == B_OK) {
+        BString filename(ref.name);
+        if (filename.EndsWith(".so")) {
+            _LoadModule(ref);
+        }
+    }
+}
+
 void MainWindow::_LoadModule(const entry_ref& ref)
 {
     BEntry entry(&ref, true);
@@ -170,6 +255,8 @@ void MainWindow::_LoadModule(const entry_ref& ref)
     BPath destDir = _GetModulesDirectory();
     BPath destPath = destDir;
     destPath.Append(ref.name);
+
+    BString fileName(ref.name);
 
     // Copy to modules settings folder if it's not already there
     if (strcmp(sourcePath.Path(), destPath.Path()) != 0) {
@@ -215,32 +302,103 @@ void MainWindow::_LoadModule(const entry_ref& ref)
         return;
     }
 
-    // Verify if signature is already present (avoid duplicates)
-    for (const auto& mod : fModules) {
-        if (strcmp(mod.instance->Signature(), instance->Signature()) == 0) {
-            delete instance;
-            unload_add_on(image);
-            BAlert* alert = new BAlert("Errore", "Un modulo con la stessa firma è già caricato.", "OK",
-                                       nullptr, nullptr, B_WIDTH_AS_USUAL, B_STOP_ALERT);
-            alert->Go();
-            return;
+    // Verify if signature is already present (avoid duplicates or replace deactivated module)
+    BString signature(instance->Signature());
+    for (auto it = fModules.begin(); it != fModules.end(); ) {
+        if (it->fileName == fileName || it->signature == signature) {
+            if (it->disabled) {
+                // Remove the old deactivated instance record cleanly from our list
+                it = fModules.erase(it);
+            } else {
+                // Active module duplicate: prevent load
+                delete instance;
+                unload_add_on(image);
+                BAlert* alert = new BAlert("Errore", "Un modulo con la stessa firma è già caricato.", "OK",
+                                           nullptr, nullptr, B_WIDTH_AS_USUAL, B_STOP_ALERT);
+                alert->Go();
+                return;
+            }
+        } else {
+            ++it;
         }
     }
 
-    // Register module handler
+    // Register module handler in Window looper
     AddHandler(instance);
 
     // Keep track of the loaded module
     LoadedModule loaded;
     loaded.image = image;
     loaded.instance = instance;
-    loaded.button = nullptr;
+    loaded.sidebarView = nullptr;
     loaded.view = nullptr;
     loaded.cardIndex = -1;
     loaded.disabled = false;
+    loaded.fileName = fileName;
+    loaded.signature = signature;
 
     _AddModuleToUI(loaded);
     fModules.push_back(loaded);
+
+    // Auto-select if it is the only active module loaded
+    int32 activeCount = 0;
+    LoadedModule* onlyActive = nullptr;
+    for (auto& mod : fModules) {
+        if (!mod.disabled && mod.instance != nullptr) {
+            activeCount++;
+            onlyActive = &mod;
+        }
+    }
+    if (activeCount == 1 && onlyActive != nullptr) {
+        _SelectModule(onlyActive->signature);
+    }
+}
+
+void MainWindow::_UnloadModuleByName(const char* name)
+{
+    BString fileName(name);
+    for (auto it = fModules.begin(); it != fModules.end(); ++it) {
+        if (it->fileName == fileName) {
+            _UnloadModule(*it, false, nullptr);
+            fModules.erase(it);
+            break;
+        }
+    }
+}
+
+void MainWindow::_UnloadModule(LoadedModule& mod, bool dueToError, const char* reason)
+{
+    // 1. Fallback visible card to EmptyView if this module's view was visible
+    if (fCardView->CardLayout() != nullptr && fCardView->CardLayout()->VisibleIndex() == mod.cardIndex) {
+        fCardView->CardLayout()->SetVisibleItem((int32)0);
+    }
+
+    // 2. Detach and delete graphic view
+    if (mod.view != nullptr) {
+        fCardView->RemoveChild(mod.view);
+        delete mod.view;
+        mod.view = nullptr;
+    }
+
+    // 3. Detach and delete sidebar vertical box
+    if (mod.sidebarView != nullptr) {
+        fSidebarView->RemoveChild(mod.sidebarView);
+        delete mod.sidebarView;
+        mod.sidebarView = nullptr;
+    }
+
+    // 4. Unregister BHandler from window
+    if (mod.instance != nullptr) {
+        RemoveHandler(mod.instance);
+        delete mod.instance;
+        mod.instance = nullptr;
+    }
+
+    // 5. Unload add-on library from memory
+    if (mod.image >= 0) {
+        unload_add_on(mod.image);
+        mod.image = -1;
+    }
 }
 
 void MainWindow::_AddModuleToUI(LoadedModule& loaded)
@@ -249,10 +407,16 @@ void MainWindow::_AddModuleToUI(LoadedModule& loaded)
     BView* moduleView = loaded.instance->GetInterfaceView();
     BBitmap* moduleIcon = loaded.instance->GetIcon();
 
-    // Create square navigation button
-    BButton* button = new BButton(loaded.instance->Name(), "", new BMessage(MSG_SELECT_MODULE));
-    button->SetExplicitMinSize(BSize(48, 48));
-    button->SetExplicitMaxSize(BSize(48, 48));
+    // Create a vertical box view for the sidebar entry
+    BGroupView* moduleBox = new BGroupView(B_VERTICAL, 2);
+    moduleBox->SetExplicitMinSize(BSize(80, 75));
+    moduleBox->SetExplicitMaxSize(BSize(80, 75));
+    moduleBox->SetViewColor(ui_color(B_PANEL_BACKGROUND_COLOR));
+
+    // Create square navigation button for the icon
+    BButton* button = new BButton("", new BMessage(MSG_SELECT_MODULE));
+    button->SetExplicitMinSize(BSize(40, 40));
+    button->SetExplicitMaxSize(BSize(40, 40));
     
     if (moduleIcon != nullptr) {
         button->SetIcon(moduleIcon);
@@ -263,23 +427,36 @@ void MainWindow::_AddModuleToUI(LoadedModule& loaded)
     selectMsg->AddString("signature", loaded.instance->Signature());
     button->SetMessage(selectMsg);
 
-    // Add button to sidebar view, positioning it before the bottom glue
+    // Create label under the icon button
+    BStringView* nameLabel = new BStringView("name_label", loaded.instance->Name());
+    nameLabel->SetAlignment(B_ALIGN_CENTER);
+    
+    BFont labelFont;
+    nameLabel->GetFont(&labelFont);
+    labelFont.SetSize(9.0f); // Small size to fit the sidebar width
+    nameLabel->SetFont(&labelFont, B_FONT_SIZE);
+
+    // Assemble the module box layout
+    moduleBox->GroupLayout()->AddView(button);
+    moduleBox->GroupLayout()->AddView(nameLabel);
+
+    // Add module box to sidebar view, positioning it before the bottom glue
     int32 itemCount = fSidebarView->GroupLayout()->CountItems();
-    fSidebarView->GroupLayout()->AddView(itemCount - 1, button);
+    fSidebarView->GroupLayout()->AddView(itemCount - 1, moduleBox);
 
     // Add view to card layout and assign card index
     fCardView->AddChild(moduleView);
     loaded.cardIndex = fCardView->CountChildren() - 1;
 
-    loaded.button = button;
+    loaded.sidebarView = moduleBox;
     loaded.view = moduleView;
 }
 
 void MainWindow::_SelectModule(const BString& signature)
 {
     for (const auto& mod : fModules) {
-        if (mod.instance != nullptr && signature == mod.instance->Signature()) {
-            if (!mod.disabled && fCardView->CardLayout() != nullptr) {
+        if (!mod.disabled && mod.signature == signature) {
+            if (fCardView->CardLayout() != nullptr) {
                 fCardView->CardLayout()->SetVisibleItem(mod.cardIndex);
             }
             return;
@@ -301,22 +478,27 @@ void MainWindow::DispatchMessage(BMessage* message, BHandler* handler)
             }
         }
 
-        // Measure execution time and catch C++ exceptions (Watchdog & Exception Trap)
-        bigtime_t startTime = system_time();
+        // Set tracking variables for Watchdog monitoring
+        fCurrentDispatchModule.store(module);
+        fDispatchStartTime.store(system_time());
+
         try {
             BWindow::DispatchMessage(message, handler);
         } catch (const std::exception& e) {
+            fCurrentDispatchModule.store(nullptr);
+            fDispatchStartTime.store(0);
             _DisableModule(module, (BString("Eccezione C++: ") << e.what()).String());
             return;
         } catch (...) {
+            fCurrentDispatchModule.store(nullptr);
+            fDispatchStartTime.store(0);
             _DisableModule(module, "Eccezione C++ sconosciuta");
             return;
         }
 
-        bigtime_t duration = system_time() - startTime;
-        if (duration > 1000000) { // More than 1 second (1,000,000 microseconds)
-            _DisableModule(module, "Watchdog: Thread UI bloccato per >1s");
-        }
+        // Reset tracking variables
+        fCurrentDispatchModule.store(nullptr);
+        fDispatchStartTime.store(0);
     } else {
         BWindow::DispatchMessage(message, handler);
     }
@@ -369,39 +551,13 @@ void MainWindow::_DisableModule(BaseModule* module, const char* reason)
                 fWarningBanner->AddDeactivatedModule(moduleName.String(), disableReason.String());
             }
 
-            // Lock Looper to ensure safe UI manipulation from current dispatch
+            // 3. Clean up GUI views & unload add-on module
             if (Lock()) {
-                // 3. Fallback visible card to EmptyView if the disabled module was shown
-                if (fCardView->CardLayout() != nullptr && fCardView->CardLayout()->VisibleIndex() == mod.cardIndex) {
-                    fCardView->CardLayout()->SetVisibleItem((int32)0);
-                }
-
-                // 4. Detach UI components and delete them
-                if (mod.view != nullptr) {
-                    fCardView->RemoveChild(mod.view);
-                    delete mod.view;
-                    mod.view = nullptr;
-                }
-                if (mod.button != nullptr) {
-                    fSidebarView->RemoveChild(mod.button);
-                    delete mod.button;
-                    mod.button = nullptr;
-                }
-
-                // 5. Unregister looper handler
-                RemoveHandler(mod.instance);
-
-                // 6. Delete module instance
-                delete mod.instance;
-                mod.instance = nullptr;
-
-                // 7. Unload dynamic library
-                unload_add_on(mod.image);
-
+                _UnloadModule(mod, true, reason);
                 Unlock();
             }
 
-            // Show standard modal alert using saved strings (module is already destroyed)
+            // Show standard modal warning dialog
             BString alertMsg;
             alertMsg << "Il modulo '" << moduleName << "' è stato disattivato per motivi di sicurezza.\n\nCausa: " << disableReason;
             BAlert* alert = new BAlert("Modulo Disattivato", alertMsg.String(), "OK",
@@ -433,7 +589,8 @@ void MainWindow::_WriteDeactivationLog(BaseModule* module, const char* reason)
             logFile << "Causa della Scelta:    " << reason << "\n";
             logFile << "----------------------------------------\n";
             logFile << "CONSIGLI PER IL DEBUG:\n";
-            if (strcmp(reason, "Watchdog: Thread UI bloccato per >1s") == 0) {
+            if (strcmp(reason, "Watchdog: Thread UI bloccato per >1s") == 0 ||
+                strcmp(reason, "Watchdog: Rilevato blocco prolungato dell'interfaccia") == 0) {
                 logFile << "  * Il modulo esegue un loop infinito o calcoli pesanti nel thread principale.\n";
                 logFile << "  * Sposta le operazioni bloccanti in un thread separato (std::thread o BThread).\n";
             } else if (strncmp(reason, "Eccezione C++:", 14) == 0) {
@@ -445,5 +602,40 @@ void MainWindow::_WriteDeactivationLog(BaseModule* module, const char* reason)
             logFile << "========================================\n\n";
             logFile.close();
         }
+    }
+}
+
+int32 MainWindow::_WatchdogEntry(void* data)
+{
+    MainWindow* window = static_cast<MainWindow*>(data);
+    return window->_WatchdogLoop();
+}
+
+int32 MainWindow::_WatchdogLoop()
+{
+    while (fWatchdogRunning.load()) {
+        snooze(100000); // Check every 100 milliseconds
+        
+        BaseModule* activeMod = fCurrentDispatchModule.load();
+        bigtime_t startTime = fDispatchStartTime.load();
+        
+        if (activeMod != nullptr && startTime > 0) {
+            bigtime_t elapsed = system_time() - startTime;
+            if (elapsed > 1000000) { // UI blocked for more than 1 second
+                // Interrupt the UI thread using SIGUSR1 POSIX signal
+                send_signal(fLooperThread, SIGUSR1);
+                
+                // Allow the thread to intercept signal and throw exception
+                snooze(100000);
+            }
+        }
+    }
+    return 0;
+}
+
+void MainWindow::_SignalHandler(int sig)
+{
+    if (sig == SIGUSR1) {
+        throw std::runtime_error("Watchdog: Rilevato blocco prolungato dell'interfaccia");
     }
 }
