@@ -116,10 +116,10 @@ void MyModule::MessageReceived(BMessage* message)
             int32 index;
             BMessage specifier;
             int32 form;
-            BString property;
+            const char* property = nullptr;
             
             if (message->GetCurrentSpecifier(&index, &specifier, &form, &property) == B_OK) {
-                if (property == "Status") {
+                if (property != nullptr && strcmp(property, "Status") == 0) {
                     reply.AddString("result", "Running normally");
                     message->SendReply(&reply);
                     return;

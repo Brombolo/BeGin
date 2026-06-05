@@ -154,10 +154,10 @@ public:
                 int32 index;
                 BMessage specifier;
                 int32 form;
-                BString property;
+                const char* property = nullptr;
                 
                 if (message->GetCurrentSpecifier(&index, &specifier, &form, &property) == B_OK) {
-                    if (property == "ProcessCount") {
+                    if (property != nullptr && strcmp(property, "ProcessCount") == 0) {
                         int32 count = 0;
                         int32 cookie = 0;
                         team_info info;

@@ -4,6 +4,7 @@
 #include <Button.h>
 #include <CardLayout.h>
 #include <LayoutBuilder.h>
+#include <SpaceLayoutItem.h>
 #include <FindDirectory.h>
 #include <Directory.h>
 #include <Entry.h>
@@ -123,7 +124,7 @@ void MainWindow::_InitInterface()
     fSidebarView->SetViewColor(ui_color(B_PANEL_BACKGROUND_COLOR));
     
     // Add glue so module buttons align to the top of the sidebar
-    fSidebarView->GroupLayout()->AddGlue();
+    fSidebarView->GroupLayout()->AddItem(BSpaceLayoutItem::CreateGlue());
 
     // Right content area (cards)
     fCardView = new BCardView();
@@ -263,8 +264,8 @@ void MainWindow::_AddModuleToUI(LoadedModule& loaded)
     button->SetMessage(selectMsg);
 
     // Add button to sidebar view, positioning it before the bottom glue
-    int32 viewsCount = fSidebarView->GroupLayout()->CountViews();
-    fSidebarView->GroupLayout()->AddView(viewsCount - 1, button);
+    int32 itemCount = fSidebarView->GroupLayout()->CountItems();
+    fSidebarView->GroupLayout()->AddView(itemCount - 1, button);
 
     // Add view to card layout and assign card index
     fCardView->AddChild(moduleView);
@@ -356,12 +357,16 @@ void MainWindow::_DisableModule(BaseModule* module, const char* reason)
 
             mod.disabled = true;
 
+            // Save module metadata before destruction
+            BString moduleName(module->Name());
+            BString disableReason(reason);
+
             // 1. Write debug diagnostics log
             _WriteDeactivationLog(module, reason);
 
             // 2. Alert user via warning banner
             if (fWarningBanner != nullptr) {
-                fWarningBanner->AddDeactivatedModule(module->Name(), reason);
+                fWarningBanner->AddDeactivatedModule(moduleName.String(), disableReason.String());
             }
 
             // Lock Looper to ensure safe UI manipulation from current dispatch
@@ -396,9 +401,9 @@ void MainWindow::_DisableModule(BaseModule* module, const char* reason)
                 Unlock();
             }
 
-            // Show standard modal alert too
+            // Show standard modal alert using saved strings (module is already destroyed)
             BString alertMsg;
-            alertMsg << "Il modulo '" << module->Name() << "' è stato disattivato per motivi di sicurezza.\n\nCausa: " << reason;
+            alertMsg << "Il modulo '" << moduleName << "' è stato disattivato per motivi di sicurezza.\n\nCausa: " << disableReason;
             BAlert* alert = new BAlert("Modulo Disattivato", alertMsg.String(), "OK",
                                        nullptr, nullptr, B_WIDTH_AS_USUAL, B_WARNING_ALERT);
             alert->Go();
