@@ -32,7 +32,8 @@ target_include_directories(BeGin PRIVATE src sdk)
 
 # Find native Haiku libraries
 find_library(BE_LIBRARY be REQUIRED)
+find_library(TRACKER_LIBRARY tracker REQUIRED)
 find_library(TRANSLATION_LIBRARY translation REQUIRED)
 
 # Link native libraries
-target_link_libraries(BeGin PRIVATE ${BE_LIBRARY} ${TRANSLATION_LIBRARY})
+target_link_libraries(BeGin PRIVATE ${BE_LIBRARY} ${TRACKER_LIBRARY} ${TRANSLATION_LIBRARY})
