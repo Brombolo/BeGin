@@ -13,6 +13,7 @@
 #include <stdexcept>
 #include <vector>
 #include <map>
+#include <stdio.h>
 
 // Messages
 enum {
@@ -206,7 +207,7 @@ private:
     size_t _GetTeamMemory(team_id team)
     {
         size_t memory = 0;
-        int32 areaCookie = 0;
+        ssize_t areaCookie = 0;
         area_info arInfo;
         while (get_next_area_info(team, &areaCookie, &arInfo) == B_OK) {
             memory += arInfo.ram_size;
@@ -265,9 +266,10 @@ private:
                 if (memPercent > 100.0) memPercent = 100.0;
 
                 // 3. Format the display string
-                BString itemText;
-                itemText.Format("%s (PID: %d, CPU: %.1f%%, RAM: %.1f%%)",
-                                info.name, (int)info.team, cpuPercent, memPercent);
+                char buf[256];
+                sprintf(buf, "%s (PID: %d, CPU: %.1f%%, RAM: %.1f%%)",
+                        info.name, (int)info.team, cpuPercent, memPercent);
+                BString itemText(buf);
                 list->AddItem(new BStringItem(itemText.String()));
             }
 

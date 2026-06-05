@@ -1,5 +1,6 @@
 #include "MainWindow.h"
 
+#include <Application.h>
 #include <Alert.h>
 #include <Button.h>
 #include <CardLayout.h>
@@ -179,6 +180,9 @@ bool MainWindow::QuitRequested()
         _UnloadModule(loaded, false, nullptr);
     }
     fModules.clear();
+
+    // Notify the application to terminate cleanly
+    be_app->PostMessage(B_QUIT_REQUESTED);
 
     return true;
 }
