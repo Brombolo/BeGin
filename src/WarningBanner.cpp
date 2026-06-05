@@ -11,12 +11,17 @@ WarningBanner::WarningBanner(const char* name)
     fTextView->SetAlignment(B_ALIGN_CENTER);
     fTextView->SetViewColor(180, 20, 20);
     fTextView->SetHighColor(255, 255, 255); // Crisp white text
+    fTextView->SetExplicitMinSize(BSize(10, 16));
+    fTextView->SetExplicitMaxSize(BSize(B_SIZE_UNLIMITED, 16));
 
     BFont font;
     fTextView->GetFont(&font);
     font.SetFace(B_BOLD_FACE);
     font.SetSize(11.0);
     fTextView->SetFont(&font, B_FONT_FACE | B_FONT_SIZE);
+
+    SetExplicitMinSize(BSize(10, 24));
+    SetExplicitMaxSize(BSize(B_SIZE_UNLIMITED, 24));
 
     BLayoutBuilder::Group<>(this, B_VERTICAL, 0)
         .SetInsets(6, 4, 6, 4)

@@ -1,4 +1,5 @@
 #include "MainWindow.h"
+#include "ModuleManagementView.h"
 
 #include <Application.h>
 #include <Alert.h>
@@ -34,10 +35,10 @@ MainWindow::MainWindow()
       fCurrentDispatchModule(nullptr),
       fDispatchStartTime(0),
       fWatchdogRunning(true),
-      fCanJump(false)
+      fCanJump(false),
+      fModuleManagementView(nullptr)
 {
     sActiveWindow = this;
-    fLooperThread = Thread();
 
     // Register POSIX signal handler for Watchdog interrupts
     struct sigaction sa;
@@ -92,6 +93,8 @@ void MainWindow::Show()
 {
     BWindow::Show();
 
+    fLooperThread = Thread();
+
     // Start watching the modules folder for live updates (now that Looper is active!)
     BPath path = _GetModulesDirectory();
     BDirectory dir(path.Path());
@@ -127,6 +130,17 @@ void MainWindow::MessageReceived(BMessage* message)
             break;
         }
 
+        case MSG_SHOW_MODULE_MANAGER:
+        {
+            if (fCardView->CardLayout() != nullptr) {
+                fCardView->CardLayout()->SetVisibleItem((int32)1);
+                if (fModuleManagementView != nullptr) {
+                    fModuleManagementView->ScanModules();
+                }
+            }
+            break;
+        }
+
         case MSG_SELECT_MODULE:
         {
             BString signature;
@@ -155,10 +169,52 @@ void MainWindow::MessageReceived(BMessage* message)
                         }
                     }
                 } else if (opcode == B_ENTRY_REMOVED) {
-                    const char* name;
-                    if (message->FindString("name", &name) == B_OK) {
-                        _UnloadModuleByName(name);
+                    dev_t device;
+                    ino_t node;
+                    if (message->FindInt32("device", &device) == B_OK &&
+                        message->FindInt64("node", &node) == B_OK) {
+                        _UnloadModuleByNode(node, device);
                     }
+                } else if (opcode == B_ENTRY_MOVED) {
+                    dev_t device;
+                    ino_t fromDir;
+                    ino_t toDir;
+                    ino_t node;
+                    const char* name;
+                    if (message->FindInt32("device", &device) == B_OK &&
+                        message->FindInt64("from_directory", &fromDir) == B_OK &&
+                        message->FindInt64("to_directory", &toDir) == B_OK &&
+                        message->FindInt64("node", &node) == B_OK &&
+                        message->FindString("name", &name) == B_OK) {
+                        
+                        bool fromMonitored = (device == fModulesDirNodeRef.device && fromDir == fModulesDirNodeRef.node);
+                        bool toMonitored = (device == fModulesDirNodeRef.device && toDir == fModulesDirNodeRef.node);
+                        BString filename(name);
+
+                        if (fromMonitored && !toMonitored) {
+                            // Moved out of monitored directory
+                            _UnloadModuleByNode(node, device);
+                        } else if (!fromMonitored && toMonitored) {
+                            // Moved into monitored directory
+                            if (filename.EndsWith(".so")) {
+                                entry_ref ref(device, toDir, name);
+                                _LoadModule(ref);
+                            }
+                        } else if (fromMonitored && toMonitored) {
+                            // Renamed inside monitored directory
+                            if (filename.EndsWith(".so")) {
+                                entry_ref ref(device, toDir, name);
+                                _LoadModule(ref);
+                            } else {
+                                _UnloadModuleByNode(node, device);
+                            }
+                        }
+                    }
+                }
+
+                // Keep the management panel updated in case it is open
+                if (fModuleManagementView != nullptr) {
+                    fModuleManagementView->ScanModules();
                 }
             }
             break;
@@ -197,6 +253,7 @@ void MainWindow::_InitInterface()
 
     BMenu* modulesMenu = new BMenu("Moduli");
     modulesMenu->AddItem(new BMenuItem("Carica modulo...", new BMessage(MSG_LOAD_MODULE_PROMPT), 'L'));
+    modulesMenu->AddItem(new BMenuItem("Gestione moduli...", new BMessage(MSG_SHOW_MODULE_MANAGER), 'M'));
     fMenuBar->AddItem(modulesMenu);
 
     // Red warning banner for deactivated modules
@@ -217,6 +274,9 @@ void MainWindow::_InitInterface()
     fCardView = new BCardView();
     fEmptyView = new EmptyView("empty_view");
     fCardView->AddChild(fEmptyView);
+
+    fModuleManagementView = new ModuleManagementView(this);
+    fCardView->AddChild(fModuleManagementView);
 
     // Layout configuration using standard BLayoutBuilder
     BLayoutBuilder::Group<>(this, B_VERTICAL, 0)
@@ -319,10 +379,18 @@ void MainWindow::_LoadModule(const entry_ref& ref)
         return;
     }
 
+    // Get the node_ref of the destination file for tracking
+    BEntry destEntry(destPath.Path(), true);
+    node_ref nodeRef;
+    if (destEntry.GetNodeRef(&nodeRef) != B_OK) {
+        memset(&nodeRef, 0, sizeof(nodeRef));
+    }
+
     // Verify if signature is already present (avoid duplicates or replace deactivated module)
     BString signature(instance->Signature());
     for (auto it = fModules.begin(); it != fModules.end(); ) {
-        if (it->fileName == fileName || it->signature == signature) {
+        bool matchesNode = (nodeRef.node != 0 && it->nodeRef.node == nodeRef.node && it->nodeRef.device == nodeRef.device);
+        if (it->fileName == fileName || it->signature == signature || matchesNode) {
             if (it->disabled) {
                 // Remove the old deactivated instance record cleanly from our list
                 it = fModules.erase(it);
@@ -353,6 +421,7 @@ void MainWindow::_LoadModule(const entry_ref& ref)
     loaded.disabled = false;
     loaded.fileName = fileName;
     loaded.signature = signature;
+    loaded.nodeRef = nodeRef;
 
     _AddModuleToUI(loaded);
     fModules.push_back(loaded);
@@ -376,6 +445,17 @@ void MainWindow::_UnloadModuleByName(const char* name)
     BString fileName(name);
     for (auto it = fModules.begin(); it != fModules.end(); ++it) {
         if (it->fileName == fileName) {
+            _UnloadModule(*it, false, nullptr);
+            fModules.erase(it);
+            break;
+        }
+    }
+}
+
+void MainWindow::_UnloadModuleByNode(ino_t node, dev_t device)
+{
+    for (auto it = fModules.begin(); it != fModules.end(); ++it) {
+        if (it->nodeRef.node == node && it->nodeRef.device == device) {
             _UnloadModule(*it, false, nullptr);
             fModules.erase(it);
             break;
@@ -671,7 +751,9 @@ int32 MainWindow::_WatchdogLoop()
 void MainWindow::_SignalHandler(int sig)
 {
     if (sig == SIGUSR1) {
-        if (sActiveWindow != nullptr && sActiveWindow->fCanJump.load()) {
+        if (sActiveWindow != nullptr && 
+            sActiveWindow->fCanJump.load() &&
+            find_thread(nullptr) == sActiveWindow->fLooperThread) {
             siglongjmp(sActiveWindow->fJumpBuf, 1);
         }
     }

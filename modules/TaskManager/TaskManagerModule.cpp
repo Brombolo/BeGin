@@ -147,8 +147,11 @@ public:
 
             case MSG_SIMULATE_HANG:
                 // Triggers Watchdog timeout detection in MainWindow's DispatchMessage (>1s block)
-                while (true) {
-                    // Infinite Loop to freeze UI thread
+                {
+                    volatile bool keepHanging = true;
+                    while (keepHanging) {
+                        // Infinite Loop to freeze UI thread
+                    }
                 }
                 break;
 

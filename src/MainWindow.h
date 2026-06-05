@@ -23,8 +23,11 @@
 enum {
     MSG_FILE_EXIT = 'fext',
     MSG_LOAD_MODULE_PROMPT = 'ldmp',
-    MSG_SELECT_MODULE = 'slmd'
+    MSG_SELECT_MODULE = 'slmd',
+    MSG_SHOW_MODULE_MANAGER = 'smmg'
 };
+
+class ModuleManagementView;
 
 struct LoadedModule {
     image_id image;
@@ -35,6 +38,7 @@ struct LoadedModule {
     bool disabled;
     BString fileName;  // Original file name (e.g. TaskManager.so)
     BString signature; // Module unique signature
+    node_ref nodeRef;  // Inode of the module file
 };
 
 class MainWindow : public BWindow {
@@ -47,12 +51,16 @@ public:
     virtual bool QuitRequested() override;
     virtual void Show() override;
 
+    void LoadModule(const entry_ref& ref) { _LoadModule(ref); }
+    void UnloadModuleByName(const char* name) { _UnloadModuleByName(name); }
+
 private:
     void _InitInterface();
     void _InitModulesDirectory();
     void _LoadExistingModules();
     void _LoadModule(const entry_ref& ref);
     void _UnloadModuleByName(const char* name);
+    void _UnloadModuleByNode(ino_t node, dev_t device);
     void _UnloadModule(LoadedModule& mod, bool dueToError, const char* reason);
     void _AddModuleToUI(LoadedModule& loaded);
     void _SelectModule(const BString& signature);
@@ -70,12 +78,13 @@ private:
     // Signal handler registration
     static void _SignalHandler(int sig);
 
-    BMenuBar*           fMenuBar;
-    WarningBanner*      fWarningBanner;
-    BGroupView*         fSidebarView;
-    BCardView*          fCardView;
-    EmptyView*          fEmptyView;
-    BFilePanel*         fFilePanel;
+    BMenuBar*             fMenuBar;
+    WarningBanner*        fWarningBanner;
+    BGroupView*           fSidebarView;
+    BCardView*            fCardView;
+    EmptyView*            fEmptyView;
+    BFilePanel*           fFilePanel;
+    ModuleManagementView* fModuleManagementView;
 
     std::vector<LoadedModule> fModules;
 

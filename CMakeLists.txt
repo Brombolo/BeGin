@@ -17,6 +17,8 @@ set(HOST_SOURCES
     src/EmptyView.cpp
     src/WarningBanner.h
     src/WarningBanner.cpp
+    src/ModuleManagementView.h
+    src/ModuleManagementView.cpp
 )
 
 # Header files for IDE visualization
