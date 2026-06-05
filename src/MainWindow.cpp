@@ -17,6 +17,9 @@
 #include <iomanip>
 #include <chrono>
 
+// Define static member
+MainWindow* MainWindow::sActiveWindow = nullptr;
+
 MainWindow::MainWindow()
     : BWindow(BRect(100, 100, 800, 600), "BeGin", B_TITLED_WINDOW, B_AUTO_UPDATE_SIZE_LIMITS),
       fMenuBar(nullptr),
@@ -29,8 +32,10 @@ MainWindow::MainWindow()
       fLooperThread(-1),
       fCurrentDispatchModule(nullptr),
       fDispatchStartTime(0),
-      fWatchdogRunning(true)
+      fWatchdogRunning(true),
+      fCanJump(false)
 {
+    sActiveWindow = this;
     fLooperThread = Thread();
 
     // Register POSIX signal handler for Watchdog interrupts
@@ -43,14 +48,6 @@ MainWindow::MainWindow()
     // Initialize modules directory & scan for existing add-ons
     _InitModulesDirectory();
     _InitInterface();
-
-    // Start watching the modules folder for live updates
-    BPath path = _GetModulesDirectory();
-    BDirectory dir(path.Path());
-    if (dir.InitCheck() == B_OK) {
-        dir.GetNodeRef(&fModulesDirNodeRef);
-        watch_node(&fModulesDirNodeRef, B_WATCH_DIRECTORY, this);
-    }
 
     // Spawn and run the watchdog thread
     fWatchdogThread = spawn_thread(_WatchdogEntry, "watchdog_thread", B_NORMAL_PRIORITY, this);
@@ -84,6 +81,23 @@ MainWindow::~MainWindow()
 
     // Clean up FilePanel
     delete fFilePanel;
+
+    if (sActiveWindow == this) {
+        sActiveWindow = nullptr;
+    }
+}
+
+void MainWindow::Show()
+{
+    BWindow::Show();
+
+    // Start watching the modules folder for live updates (now that Looper is active!)
+    BPath path = _GetModulesDirectory();
+    BDirectory dir(path.Path());
+    if (dir.InitCheck() == B_OK) {
+        dir.GetNodeRef(&fModulesDirNodeRef);
+        watch_node(&fModulesDirNodeRef, B_WATCH_DIRECTORY, this);
+    }
 }
 
 void MainWindow::MessageReceived(BMessage* message)
@@ -136,7 +150,6 @@ void MainWindow::MessageReceived(BMessage* message)
                         BString filename(name);
                         if (filename.EndsWith(".so")) {
                             entry_ref ref(device, directory, name);
-                            // Execute load
                             _LoadModule(ref);
                         }
                     }
@@ -482,17 +495,34 @@ void MainWindow::DispatchMessage(BMessage* message, BHandler* handler)
         fCurrentDispatchModule.store(module);
         fDispatchStartTime.store(system_time());
 
-        try {
-            BWindow::DispatchMessage(message, handler);
-        } catch (const std::exception& e) {
+        // Setup sigsetjmp for safe asynchronous watchdog recovery
+        if (sigsetjmp(fJumpBuf, 1) == 0) {
+            fCanJump.store(true);
+            
+            try {
+                BWindow::DispatchMessage(message, handler);
+            } catch (const std::exception& e) {
+                fCanJump.store(false);
+                fCurrentDispatchModule.store(nullptr);
+                fDispatchStartTime.store(0);
+                _DisableModule(module, (BString("Eccezione C++: ") << e.what()).String());
+                return;
+            } catch (...) {
+                fCanJump.store(false);
+                fCurrentDispatchModule.store(nullptr);
+                fDispatchStartTime.store(0);
+                _DisableModule(module, "Eccezione C++ sconosciuta");
+                return;
+            }
+            
+            fCanJump.store(false);
+        } else {
+            // Watchdog triggered siglongjmp!
+            fCanJump.store(false);
             fCurrentDispatchModule.store(nullptr);
             fDispatchStartTime.store(0);
-            _DisableModule(module, (BString("Eccezione C++: ") << e.what()).String());
-            return;
-        } catch (...) {
-            fCurrentDispatchModule.store(nullptr);
-            fDispatchStartTime.store(0);
-            _DisableModule(module, "Eccezione C++ sconosciuta");
+            
+            _DisableModule(module, "Watchdog: Thread UI bloccato (sbloccato asincronamente)");
             return;
         }
 
@@ -590,7 +620,8 @@ void MainWindow::_WriteDeactivationLog(BaseModule* module, const char* reason)
             logFile << "----------------------------------------\n";
             logFile << "CONSIGLI PER IL DEBUG:\n";
             if (strcmp(reason, "Watchdog: Thread UI bloccato per >1s") == 0 ||
-                strcmp(reason, "Watchdog: Rilevato blocco prolungato dell'interfaccia") == 0) {
+                strcmp(reason, "Watchdog: Rilevato blocco prolungato dell'interfaccia") == 0 ||
+                strcmp(reason, "Watchdog: Thread UI bloccato (sbloccato asincronamente)") == 0) {
                 logFile << "  * Il modulo esegue un loop infinito o calcoli pesanti nel thread principale.\n";
                 logFile << "  * Sposta le operazioni bloccanti in un thread separato (std::thread o BThread).\n";
             } else if (strncmp(reason, "Eccezione C++:", 14) == 0) {
@@ -625,7 +656,7 @@ int32 MainWindow::_WatchdogLoop()
                 // Interrupt the UI thread using SIGUSR1 POSIX signal
                 send_signal(fLooperThread, SIGUSR1);
                 
-                // Allow the thread to intercept signal and throw exception
+                // Allow the thread to intercept signal and execute siglongjmp
                 snooze(100000);
             }
         }
@@ -636,6 +667,8 @@ int32 MainWindow::_WatchdogLoop()
 void MainWindow::_SignalHandler(int sig)
 {
     if (sig == SIGUSR1) {
-        throw std::runtime_error("Watchdog: Rilevato blocco prolungato dell'interfaccia");
+        if (sActiveWindow != nullptr && sActiveWindow->fCanJump.load()) {
+            siglongjmp(sActiveWindow->fJumpBuf, 1);
+        }
     }
 }

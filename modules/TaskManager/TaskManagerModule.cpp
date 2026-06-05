@@ -12,6 +12,7 @@
 
 #include <stdexcept>
 #include <vector>
+#include <map>
 
 // Messages
 enum {
@@ -89,9 +90,11 @@ public:
         : BaseModule("Task Manager", "module/x-vnd.TaskManager"),
           fView(nullptr),
           fRunner(nullptr),
-          fIcon(nullptr)
+          fIcon(nullptr),
+          fLastSampleTime(0)
     {
         fPropertyInfo = new BPropertyInfo(sPropInfo);
+        fLastSampleTime = system_time();
         
         // Generate a simple green 16x16 programmatical icon to verify SetIcon
         fIcon = new BBitmap(BRect(0, 0, 15, 15), B_RGBA32);
@@ -189,6 +192,28 @@ public:
     }
 
 private:
+    bigtime_t _GetTeamCPUTime(team_id team)
+    {
+        bigtime_t cpuTime = 0;
+        int32 threadCookie = 0;
+        thread_info thInfo;
+        while (get_next_thread_info(team, &threadCookie, &thInfo) == B_OK) {
+            cpuTime += thInfo.user_time + thInfo.kernel_time;
+        }
+        return cpuTime;
+    }
+
+    size_t _GetTeamMemory(team_id team)
+    {
+        size_t memory = 0;
+        int32 areaCookie = 0;
+        area_info arInfo;
+        while (get_next_area_info(team, &areaCookie, &arInfo) == B_OK) {
+            memory += arInfo.ram_size;
+        }
+        return memory;
+    }
+
     void _RefreshProcessList()
     {
         if (fView == nullptr || fView->GetListView() == nullptr) return;
@@ -204,23 +229,59 @@ private:
                 delete item;
             }
 
+            // Retrieve CPU and RAM system-wide info
+            bigtime_t now = system_time();
+            bigtime_t deltaReal = now - fLastSampleTime;
+            fLastSampleTime = now;
+
+            system_info sysInfo;
+            get_system_info(&sysInfo);
+            int32 cpuCount = sysInfo.cpu_count;
+            if (cpuCount < 1) cpuCount = 1;
+            double totalMemoryBytes = (double)sysInfo.max_pages * B_PAGE_SIZE;
+
+            std::map<team_id, bigtime_t> currentCPUTimes;
+
             // Retrieve all running teams (processes)
             int32 cookie = 0;
             team_info info;
             while (get_next_team_info(&cookie, &info) == B_OK) {
+                // 1. Calculate CPU usage percentage
+                bigtime_t currentCPU = _GetTeamCPUTime(info.team);
+                currentCPUTimes[info.team] = currentCPU;
+
+                double cpuPercent = 0.0;
+                if (deltaReal > 0 && fLastCPUTimes.count(info.team) > 0) {
+                    bigtime_t deltaCPU = currentCPU - fLastCPUTimes[info.team];
+                    cpuPercent = ((double)deltaCPU / deltaReal * 100.0) / cpuCount;
+                    if (cpuPercent < 0.0) cpuPercent = 0.0;
+                    if (cpuPercent > 100.0) cpuPercent = 100.0;
+                }
+
+                // 2. Calculate RAM usage percentage
+                size_t teamMem = _GetTeamMemory(info.team);
+                double memPercent = (totalMemoryBytes > 0) ? ((double)teamMem / totalMemoryBytes * 100.0) : 0.0;
+                if (memPercent < 0.0) memPercent = 0.0;
+                if (memPercent > 100.0) memPercent = 100.0;
+
+                // 3. Format the display string
                 BString itemText;
-                itemText << info.name << " (PID: " << info.team
-                         << ", Threads: " << info.thread_count
-                         << ", Areas: " << info.area_count << ")";
+                itemText.Format("%s (PID: %d, CPU: %.1f%%, RAM: %.1f%%)",
+                                info.name, (int)info.team, cpuPercent, memPercent);
                 list->AddItem(new BStringItem(itemText.String()));
             }
+
+            fLastCPUTimes = currentCPUTimes;
+
             UnlockLooper();
         }
     }
 
-    TaskManagerView* fView;
-    BMessageRunner*  fRunner;
-    BBitmap*         fIcon;
+    TaskManagerView*             fView;
+    BMessageRunner*              fRunner;
+    BBitmap*                     fIcon;
+    std::map<team_id, bigtime_t> fLastCPUTimes;
+    bigtime_t                    fLastSampleTime;
 };
 
 // Export factory function with extern "C" to prevent name mangling

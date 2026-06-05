@@ -13,6 +13,7 @@
 #include <image.h>
 #include <vector>
 #include <atomic>
+#include <setjmp.h>
 
 #include "BaseModule.h"
 #include "EmptyView.h"
@@ -44,6 +45,7 @@ public:
     virtual void MessageReceived(BMessage* message) override;
     virtual void DispatchMessage(BMessage* message, BHandler* handler) override;
     virtual bool QuitRequested() override;
+    virtual void Show() override;
 
 private:
     void _InitInterface();
@@ -86,6 +88,13 @@ private:
     std::atomic<BaseModule*>  fCurrentDispatchModule;
     std::atomic<bigtime_t>    fDispatchStartTime;
     std::atomic<bool>         fWatchdogRunning;
+
+    // Safe jump buffers for non-local recovery during block interrupts
+    sigjmp_buf                fJumpBuf;
+    std::atomic<bool>         fCanJump;
+
+    // Static instance pointer to resolve context inside POSIX signal handler
+    static MainWindow*        sActiveWindow;
 };
 
 #endif // MAIN_WINDOW_H
