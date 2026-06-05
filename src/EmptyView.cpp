@@ -8,7 +8,7 @@ EmptyView::EmptyView(const char* name)
     // Set view color to match the system panel background
     SetViewColor(ui_color(B_PANEL_BACKGROUND_COLOR));
 
-    BStringView* statusView = new BStringView("status_label", "Nessun modulo caricato");
+    BStringView* statusView = new BStringView("status_label", "No module loaded");
     statusView->SetAlignment(B_ALIGN_CENTER);
 
     // Increase font size or make it bold for better styling

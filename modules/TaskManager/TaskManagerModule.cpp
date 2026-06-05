@@ -1,3 +1,4 @@
+// TaskManagerModule.cpp – System process monitor add-on module
 #include <BaseModule.h>
 
 #include <View.h>
@@ -15,27 +16,27 @@
 #include <map>
 #include <stdio.h>
 
-// Messages
+// ── Internal message codes ────────────────────────────────────────────────────
 enum {
-    MSG_REFRESH_TICK = 'rftk',
-    MSG_REFRESH_CMD = 'rfcm',
-    MSG_SIMULATE_EXCEPTION = 'smex',
-    MSG_SIMULATE_HANG = 'smhg'
+    MSG_REFRESH_TICK       = 'rftk', // Periodic auto-refresh timer
+    MSG_REFRESH_CMD        = 'rfcm', // Manual refresh button
+    MSG_SIMULATE_EXCEPTION = 'smex', // Test: throw a C++ exception
+    MSG_SIMULATE_HANG      = 'smhg', // Test: enter an infinite loop
 };
 
-// Scripting Properties Table
+// ── Scripting properties ──────────────────────────────────────────────────────
 static property_info sPropInfo[] = {
     {
         "ProcessCount",
         { B_GET_PROPERTY, 0 },
         { B_DIRECT_SPECIFIER, 0 },
-        "Get the number of active running processes (teams).",
+        "Returns the number of currently running teams (processes).",
         0
     },
     { 0 }
 };
 
-// Task Manager GUI View Class
+// ── TaskManagerView – the GUI widget ─────────────────────────────────────────
 class TaskManagerView : public BView {
 public:
     TaskManagerView(BHandler* targetModule)
@@ -44,31 +45,32 @@ public:
     {
         SetViewColor(ui_color(B_PANEL_BACKGROUND_COLOR));
 
-        fListView = new BListView("process_list");
+        fListView  = new BListView("process_list");
         fScrollView = new BScrollView("scroll_list", fListView, 0, true, true);
 
-        // Standard Actions
-        fRefreshBtn = new BButton("Aggiorna", new BMessage(MSG_REFRESH_CMD));
+        // Standard controls
+        fRefreshBtn = new BButton("Refresh", new BMessage(MSG_REFRESH_CMD));
         fRefreshBtn->SetTarget(fTargetModule);
 
-        // Crash Simulation Actions
-        fExceptionBtn = new BButton("Simula Eccezione", new BMessage(MSG_SIMULATE_EXCEPTION));
+        // Fault simulation controls (for testing the host watchdog)
+        fExceptionBtn = new BButton("Simulate Exception",
+                                     new BMessage(MSG_SIMULATE_EXCEPTION));
         fExceptionBtn->SetTarget(fTargetModule);
 
-        fHangBtn = new BButton("Simula Blocco", new BMessage(MSG_SIMULATE_HANG));
+        fHangBtn = new BButton("Simulate Hang",
+                                new BMessage(MSG_SIMULATE_HANG));
         fHangBtn->SetTarget(fTargetModule);
 
-        // Lay out UI
         BLayoutBuilder::Group<>(this, B_VERTICAL, 10)
             .SetInsets(10, 10, 10, 10)
-            .Add(fScrollView, 1.0f) // list takes all remaining vertical space
+            .Add(fScrollView, 1.0f)
             .AddGroup(B_HORIZONTAL, 10)
                 .Add(fRefreshBtn)
                 .AddGlue()
                 .Add(fExceptionBtn)
                 .Add(fHangBtn)
             .End()
-        .End();
+            .End();
     }
 
     virtual ~TaskManagerView() {}
@@ -84,7 +86,7 @@ private:
     BButton*     fHangBtn;
 };
 
-// Task Manager SDK Module Class
+// ── TaskManager – the module class ───────────────────────────────────────────
 class TaskManager : public BaseModule {
 public:
     TaskManager()
@@ -96,14 +98,13 @@ public:
     {
         fPropertyInfo = new BPropertyInfo(sPropInfo);
         fLastSampleTime = system_time();
-        
-        // Generate a simple green 16x16 programmatical icon to verify SetIcon
+
+        // Generate a simple 16×16 green icon
         fIcon = new BBitmap(BRect(0, 0, 15, 15), B_RGBA32);
         uint32* bits = (uint32*)fIcon->Bits();
-        if (bits != nullptr) {
-            for (int i = 0; i < 256; ++i) {
-                bits[i] = 0xFF00DD00; // Green with slight alpha/color shift
-            }
+        if (bits) {
+            for (int i = 0; i < 256; ++i)
+                bits[i] = 0xFF00DD00;
         }
     }
 
@@ -111,26 +112,25 @@ public:
     {
         delete fRunner;
         delete fIcon;
-        // fView is deleted by the Host MainWindow
+        // fView lifetime is managed by the host MainWindow
     }
 
     virtual BView* GetInterfaceView() override
     {
-        if (fView == nullptr) {
+        if (!fView) {
             fView = new TaskManagerView(this);
-            // Refresh initially
             _RefreshProcessList();
-            
-            // Start dynamic periodic refreshing (every 2 seconds)
-            fRunner = new BMessageRunner(BMessenger(this), new BMessage(MSG_REFRESH_TICK), 2000000);
+            // Auto-refresh every 2 seconds
+            fRunner = new BMessageRunner(BMessenger(this),
+                                          new BMessage(MSG_REFRESH_TICK),
+                                          2000000);
         }
         return fView;
     }
 
-    virtual BBitmap* GetIcon() override
-    {
-        return fIcon;
-    }
+    virtual BBitmap* GetIcon() override { return fIcon; }
+
+    virtual const char* Version() const override { return "1.0.0"; }
 
     virtual void MessageReceived(BMessage* message) override
     {
@@ -141,16 +141,16 @@ public:
                 break;
 
             case MSG_SIMULATE_EXCEPTION:
-                // Triggers exception handling inside MainWindow's DispatchMessage
-                throw std::runtime_error("Malfunzionamento simulato: Eccezione C++ non gestita nel modulo.");
-                break;
+                // Triggers the C++ exception handler in MainWindow::DispatchMessage
+                throw std::runtime_error(
+                    "Simulated fault: unhandled C++ exception from module.");
 
             case MSG_SIMULATE_HANG:
-                // Triggers Watchdog timeout detection in MainWindow's DispatchMessage (>1s block)
+                // Triggers the watchdog timeout in MainWindow::DispatchMessage
                 {
                     volatile bool keepHanging = true;
                     while (keepHanging) {
-                        // Infinite Loop to freeze UI thread
+                        // Infinite loop — blocks the UI thread intentionally
                     }
                 }
                 break;
@@ -158,19 +158,19 @@ public:
             case B_GET_PROPERTY:
             {
                 BMessage reply(B_REPLY);
-                int32 index;
-                BMessage specifier;
-                int32 form;
+                int32       index;
+                BMessage    specifier;
+                int32       form;
                 const char* property = nullptr;
-                
-                if (message->GetCurrentSpecifier(&index, &specifier, &form, &property) == B_OK) {
-                    if (property != nullptr && strcmp(property, "ProcessCount") == 0) {
-                        int32 count = 0;
-                        int32 cookie = 0;
+
+                if (message->GetCurrentSpecifier(&index, &specifier,
+                                                  &form, &property) == B_OK) {
+                    if (property && strcmp(property, "ProcessCount") == 0) {
+                        int32     count  = 0;
+                        int32     cookie = 0;
                         team_info info;
-                        while (get_next_team_info(&cookie, &info) == B_OK) {
+                        while (get_next_team_info(&cookie, &info) == B_OK)
                             count++;
-                        }
                         reply.AddInt32("result", count);
                         message->SendReply(&reply);
                         return;
@@ -189,97 +189,94 @@ public:
                                         BMessage* specifier, int32 form,
                                         const char* property) override
     {
-        if (fPropertyInfo->FindMatch(message, index, specifier, form, property) >= 0) {
+        if (fPropertyInfo->FindMatch(message, index, specifier,
+                                      form, property) >= 0)
             return this;
-        }
-        return BaseModule::ResolveSpecifier(message, index, specifier, form, property);
+        return BaseModule::ResolveSpecifier(message, index, specifier,
+                                             form, property);
     }
 
 private:
+    // Returns the total CPU time (user + kernel) across all threads of a team
     bigtime_t _GetTeamCPUTime(team_id team)
     {
-        bigtime_t cpuTime = 0;
-        int32 threadCookie = 0;
-        thread_info thInfo;
-        while (get_next_thread_info(team, &threadCookie, &thInfo) == B_OK) {
-            cpuTime += thInfo.user_time + thInfo.kernel_time;
-        }
+        bigtime_t  cpuTime = 0;
+        int32      cookie  = 0;
+        thread_info th;
+        while (get_next_thread_info(team, &cookie, &th) == B_OK)
+            cpuTime += th.user_time + th.kernel_time;
         return cpuTime;
     }
 
+    // Returns the total physical RAM usage of a team across all its mapped areas
     size_t _GetTeamMemory(team_id team)
     {
-        size_t memory = 0;
-        ssize_t areaCookie = 0;
+        size_t   memory    = 0;
+        ssize_t  areaCookie = 0;
         area_info arInfo;
-        while (get_next_area_info(team, &areaCookie, &arInfo) == B_OK) {
+        while (get_next_area_info(team, &areaCookie, &arInfo) == B_OK)
             memory += arInfo.ram_size;
-        }
         return memory;
     }
 
     void _RefreshProcessList()
     {
-        if (fView == nullptr || fView->GetListView() == nullptr) return;
+        if (!fView || !fView->GetListView())
+            return;
 
         BListView* list = fView->GetListView();
-        
-        // Ensure looper is locked during view manipulation
-        if (LockLooper()) {
-            // Memory-safe clearing of BListView
-            int32 count = list->CountItems();
-            for (int32 i = count - 1; i >= 0; --i) {
-                BListItem* item = list->RemoveItem(i);
-                delete item;
+
+        if (!LockLooper())
+            return;
+
+        // Clear previous entries
+        int32 count = list->CountItems();
+        for (int32 i = count - 1; i >= 0; --i)
+            delete list->RemoveItem(i);
+
+        // Snapshot system-wide timing and memory stats
+        bigtime_t now      = system_time();
+        bigtime_t deltaReal = now - fLastSampleTime;
+        fLastSampleTime    = now;
+
+        system_info sysInfo;
+        get_system_info(&sysInfo);
+        int32  cpuCount       = sysInfo.cpu_count > 0 ? sysInfo.cpu_count : 1;
+        double totalMemBytes  = (double)sysInfo.max_pages * B_PAGE_SIZE;
+
+        std::map<team_id, bigtime_t> currentCPUTimes;
+
+        int32     cookie = 0;
+        team_info info;
+        while (get_next_team_info(&cookie, &info) == B_OK) {
+            // ── CPU % ───────────────────────────────────────────────────────
+            bigtime_t curCPU = _GetTeamCPUTime(info.team);
+            currentCPUTimes[info.team] = curCPU;
+
+            double cpuPct = 0.0;
+            if (deltaReal > 0 && fLastCPUTimes.count(info.team) > 0) {
+                bigtime_t deltaCPU = curCPU - fLastCPUTimes[info.team];
+                cpuPct = ((double)deltaCPU / deltaReal * 100.0) / cpuCount;
+                if (cpuPct < 0.0)   cpuPct = 0.0;
+                if (cpuPct > 100.0) cpuPct = 100.0;
             }
 
-            // Retrieve CPU and RAM system-wide info
-            bigtime_t now = system_time();
-            bigtime_t deltaReal = now - fLastSampleTime;
-            fLastSampleTime = now;
+            // ── RAM % ───────────────────────────────────────────────────────
+            size_t teamMem = _GetTeamMemory(info.team);
+            double memPct  = (totalMemBytes > 0)
+                             ? ((double)teamMem / totalMemBytes * 100.0) : 0.0;
+            if (memPct < 0.0)   memPct = 0.0;
+            if (memPct > 100.0) memPct = 100.0;
 
-            system_info sysInfo;
-            get_system_info(&sysInfo);
-            int32 cpuCount = sysInfo.cpu_count;
-            if (cpuCount < 1) cpuCount = 1;
-            double totalMemoryBytes = (double)sysInfo.max_pages * B_PAGE_SIZE;
-
-            std::map<team_id, bigtime_t> currentCPUTimes;
-
-            // Retrieve all running teams (processes)
-            int32 cookie = 0;
-            team_info info;
-            while (get_next_team_info(&cookie, &info) == B_OK) {
-                // 1. Calculate CPU usage percentage
-                bigtime_t currentCPU = _GetTeamCPUTime(info.team);
-                currentCPUTimes[info.team] = currentCPU;
-
-                double cpuPercent = 0.0;
-                if (deltaReal > 0 && fLastCPUTimes.count(info.team) > 0) {
-                    bigtime_t deltaCPU = currentCPU - fLastCPUTimes[info.team];
-                    cpuPercent = ((double)deltaCPU / deltaReal * 100.0) / cpuCount;
-                    if (cpuPercent < 0.0) cpuPercent = 0.0;
-                    if (cpuPercent > 100.0) cpuPercent = 100.0;
-                }
-
-                // 2. Calculate RAM usage percentage
-                size_t teamMem = _GetTeamMemory(info.team);
-                double memPercent = (totalMemoryBytes > 0) ? ((double)teamMem / totalMemoryBytes * 100.0) : 0.0;
-                if (memPercent < 0.0) memPercent = 0.0;
-                if (memPercent > 100.0) memPercent = 100.0;
-
-                // 3. Format the display string
-                char buf[256];
-                sprintf(buf, "%s (PID: %d, CPU: %.1f%%, RAM: %.1f%%)",
-                        info.name, (int)info.team, cpuPercent, memPercent);
-                BString itemText(buf);
-                list->AddItem(new BStringItem(itemText.String()));
-            }
-
-            fLastCPUTimes = currentCPUTimes;
-
-            UnlockLooper();
+            // ── Format and add to list ────────────────────────────────────
+            char buf[256];
+            sprintf(buf, "%s  (PID: %d  CPU: %.1f%%  RAM: %.1f%%)",
+                    info.name, (int)info.team, cpuPct, memPct);
+            list->AddItem(new BStringItem(buf));
         }
+
+        fLastCPUTimes = currentCPUTimes;
+        UnlockLooper();
     }
 
     TaskManagerView*             fView;
@@ -289,7 +286,7 @@ private:
     bigtime_t                    fLastSampleTime;
 };
 
-// Export factory function with extern "C" to prevent name mangling
+// ── Factory function – must be exported with C linkage ────────────────────────
 extern "C" BaseModule* instantiate_module()
 {
     return new TaskManager();

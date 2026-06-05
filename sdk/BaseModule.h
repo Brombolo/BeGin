@@ -1,3 +1,4 @@
+// BaseModule.h – BeGin SDK: base class that all add-on modules must inherit from
 #ifndef BEGIN_BASE_MODULE_H
 #define BEGIN_BASE_MODULE_H
 
@@ -14,36 +15,36 @@ public:
         : BHandler(name),
           fSignature(signature),
           fPropertyInfo(nullptr)
-    {
-    }
+    {}
 
     virtual ~BaseModule()
     {
         delete fPropertyInfo;
     }
 
-    // Graphical Interface (to be implemented by subclasses)
-    virtual BView* GetInterfaceView() = 0;
-    virtual BBitmap* GetIcon() = 0;
+    // ── Interface to implement in subclasses ──────────────────────────────────
+    virtual BView*   GetInterfaceView() = 0; // Return the module's content view
+    virtual BBitmap* GetIcon()          = 0; // Return the module's sidebar icon
+    virtual const char* Version() const { return "1.0.0"; } // Module version
 
-    // Getters for metadata
+    // ── Metadata accessors ────────────────────────────────────────────────────
     const char* Signature() const { return fSignature.String(); }
 
-    // Standard Scripting Integration
+    // ── BHandler scripting integration ───────────────────────────────────────
     virtual BHandler* ResolveSpecifier(BMessage* message, int32 index,
                                         BMessage* specifier, int32 form,
                                         const char* property) override
     {
-        if (fPropertyInfo == nullptr) {
-            return BHandler::ResolveSpecifier(message, index, specifier, form, property);
-        }
+        if (fPropertyInfo == nullptr)
+            return BHandler::ResolveSpecifier(message, index, specifier,
+                                               form, property);
 
-        // Validate command using BPropertyInfo
-        if (fPropertyInfo->FindMatch(message, index, specifier, form, property) >= 0) {
+        if (fPropertyInfo->FindMatch(message, index, specifier,
+                                      form, property) >= 0)
             return this;
-        }
 
-        return BHandler::ResolveSpecifier(message, index, specifier, form, property);
+        return BHandler::ResolveSpecifier(message, index, specifier,
+                                           form, property);
     }
 
     virtual void MessageReceived(BMessage* message) override
@@ -52,21 +53,19 @@ public:
             case B_GET_PROPERTY:
             case B_SET_PROPERTY:
             case B_EXECUTE_PROPERTY:
-            {
-                // Derived classes should handle their specific properties in MessageReceived.
-                // If not handled, it falls through to BHandler.
+                // Subclasses should handle their specific properties;
+                // unhandled ones fall through to BHandler.
                 break;
-            }
         }
         BHandler::MessageReceived(message);
     }
 
 protected:
-    BString fSignature;
+    BString        fSignature;
     BPropertyInfo* fPropertyInfo;
 };
 
-// Definition of the Factory function signature that modules must export
+// Factory function signature that every module shared library must export
 typedef BaseModule* (*instantiate_module_func)(void);
 
 #endif // BEGIN_BASE_MODULE_H

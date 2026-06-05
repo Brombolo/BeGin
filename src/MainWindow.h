@@ -21,24 +21,25 @@
 
 // Message constants
 enum {
-    MSG_FILE_EXIT = 'fext',
-    MSG_LOAD_MODULE_PROMPT = 'ldmp',
-    MSG_SELECT_MODULE = 'slmd',
-    MSG_SHOW_MODULE_MANAGER = 'smmg'
+    MSG_FILE_EXIT           = 'fext',
+    MSG_SELECT_MODULE       = 'slmd',
+    MSG_SHOW_SETTINGS       = 'sset',  // Open the settings overlay
+    MSG_HIDE_SETTINGS       = 'hdst',  // Close settings and return to main view
 };
 
 class ModuleManagementView;
 
+// Represents a fully loaded and active add-on module
 struct LoadedModule {
-    image_id image;
+    image_id    image;
     BaseModule* instance;
-    BView* sidebarView; // The composite box containing the icon and label
-    BView* view;
-    int32 cardIndex;
-    bool disabled;
-    BString fileName;  // Original file name (e.g. TaskManager.so)
-    BString signature; // Module unique signature
-    node_ref nodeRef;  // Inode of the module file
+    BView*      sidebarView; // Composite box (icon + label) in the sidebar
+    BView*      view;        // The module's content view inside the card layout
+    int32       cardIndex;   // Index inside fModuleCardView
+    bool        disabled;
+    BString     fileName;    // File name on disk (e.g. "TaskManager.so")
+    BString     signature;   // Unique module signature string
+    node_ref    nodeRef;     // Filesystem inode reference for live tracking
 };
 
 class MainWindow : public BWindow {
@@ -51,59 +52,74 @@ public:
     virtual bool QuitRequested() override;
     virtual void Show() override;
 
-    void LoadModule(const entry_ref& ref) { _LoadModule(ref); }
+    // Public wrappers used by ModuleManagementView
+    void LoadModule(const entry_ref& ref)    { _LoadModule(ref); }
     void UnloadModuleByName(const char* name) { _UnloadModuleByName(name); }
 
 private:
-    void _InitInterface();
-    void _InitModulesDirectory();
-    void _LoadExistingModules();
-    void _LoadModule(const entry_ref& ref);
-    void _UnloadModuleByName(const char* name);
-    void _UnloadModuleByNode(ino_t node, dev_t device);
-    void _UnloadModule(LoadedModule& mod, bool dueToError, const char* reason);
-    void _AddModuleToUI(LoadedModule& loaded);
-    void _SelectModule(const BString& signature);
+    // Initialisation helpers
+    void  _InitInterface();
+    void  _InitModulesDirectory();
+    void  _LoadExistingModules();
     BPath _GetModulesDirectory();
-    
-    // Fault Tolerance Helpers
+
+    // Module loading / unloading
+    void  _LoadModule(const entry_ref& ref);
+    void  _LoadModuleDirect(const char* path, const char* fileName);
+    void  _UnloadModuleByName(const char* name);
+    void  _UnloadModuleByNode(ino_t node, dev_t device);
+    void  _UnloadModule(LoadedModule& mod, bool dueToError, const char* reason);
+    void  _AddModuleToUI(LoadedModule& loaded);
+    void  _SelectModule(const BString& signature);
+    void  _SelectFirstActiveModule();
+
+    // Fault tolerance helpers
     BaseModule* _FindModuleForHandler(BHandler* handler);
-    void _DisableModule(BaseModule* module, const char* reason);
-    void _WriteDeactivationLog(BaseModule* module, const char* reason);
+    void  _DisableModule(BaseModule* module, const char* reason);
+    void  _WriteDeactivationLog(BaseModule* module, const char* reason);
+    void  _RenameModuleFileDisabled(const BString& fileName);
 
-    // Watchdog Thread Methods
+    // Watchdog thread
     static int32 _WatchdogEntry(void* data);
-    int32 _WatchdogLoop();
+    int32  _WatchdogLoop();
 
-    // Signal handler registration
+    // POSIX signal handler
     static void _SignalHandler(int sig);
 
-    BMenuBar*             fMenuBar;
+    // ── UI widgets ──────────────────────────────────────────────────────────
+    BMenuBar*             fMenuBar;        // Main menu bar (File | ⚙)
     WarningBanner*        fWarningBanner;
-    BGroupView*           fSidebarView;
-    BCardView*            fCardView;
-    EmptyView*            fEmptyView;
-    BFilePanel*           fFilePanel;
+
+    // Outer card: Card 0 = normal app view, Card 1 = settings overlay
+    BCardView*            fMainCardView;
+
+    // Normal app view elements
+    BGroupView*           fSidebarView;    // Left sidebar with module buttons
+    BCardView*            fModuleCardView; // Right content area (one card per module)
+    EmptyView*            fEmptyView;      // Placeholder shown when no module is selected
+
+    // Settings overlay elements
     ModuleManagementView* fModuleManagementView;
 
+    // ── State ───────────────────────────────────────────────────────────────
     std::vector<LoadedModule> fModules;
 
-    // Node Monitor
+    // Node Monitor – watches the add-ons directory for live file changes
     node_ref fModulesDirNodeRef;
 
-    // Watchdog variables
-    thread_id                 fWatchdogThread;
-    thread_id                 fLooperThread;
-    std::atomic<BaseModule*>  fCurrentDispatchModule;
-    std::atomic<bigtime_t>    fDispatchStartTime;
-    std::atomic<bool>         fWatchdogRunning;
+    // Watchdog thread
+    thread_id               fWatchdogThread;
+    thread_id               fLooperThread;
+    std::atomic<BaseModule*> fCurrentDispatchModule;
+    std::atomic<bigtime_t>   fDispatchStartTime;
+    std::atomic<bool>        fWatchdogRunning;
 
-    // Safe jump buffers for non-local recovery during block interrupts
-    sigjmp_buf                fJumpBuf;
-    std::atomic<bool>         fCanJump;
+    // Non-local jump buffer for safe watchdog recovery
+    sigjmp_buf              fJumpBuf;
+    std::atomic<bool>       fCanJump;
 
-    // Static instance pointer to resolve context inside POSIX signal handler
-    static MainWindow*        sActiveWindow;
+    // Static back-pointer used inside the POSIX signal handler
+    static MainWindow* sActiveWindow;
 };
 
 #endif // MAIN_WINDOW_H
