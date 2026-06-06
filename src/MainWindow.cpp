@@ -23,6 +23,7 @@
 
 // ── Static member definition ─────────────────────────────────────────────────
 MainWindow* MainWindow::sActiveWindow = nullptr;
+std::mutex  MainWindow::sActiveWindowMutex;
 
 // ── Constructor ──────────────────────────────────────────────────────────[...]
 MainWindow::MainWindow()
@@ -42,7 +43,14 @@ MainWindow::MainWindow()
       fWatchdogRunning(true),
       fCanJump(false)
 {
-    sActiveWindow = this;
+    // Initialize node reference to zeros to prevent garbage data
+    memset(&fModulesDirNodeRef, 0, sizeof(fModulesDirNodeRef));
+
+    // Register static back-pointer (must be before signal handler registration)
+    {
+        std::lock_guard<std::mutex> lock(sActiveWindowMutex);
+        sActiveWindow = this;
+    }
 
     // Register the POSIX signal handler used by the watchdog thread
     struct sigaction sa;
@@ -58,8 +66,13 @@ MainWindow::MainWindow()
     // Start the watchdog thread
     fWatchdogThread = spawn_thread(_WatchdogEntry, "begin_watchdog",
                                    B_NORMAL_PRIORITY, this);
-    if (fWatchdogThread >= 0)
+    if (fWatchdogThread >= 0) {
         resume_thread(fWatchdogThread);
+    } else {
+        // Log error if watchdog thread failed to spawn
+        fprintf(stderr, "Error: Failed to spawn watchdog thread (error code: %ld)\n",
+                (long)fWatchdogThread);
+    }
 
     // Load any modules already sitting in the add-ons directory
     _LoadExistingModules();
@@ -79,8 +92,12 @@ MainWindow::~MainWindow()
         wait_for_thread(fWatchdogThread, &exitVal);
     }
 
-    if (sActiveWindow == this)
-        sActiveWindow = nullptr;
+    // Clear static back-pointer safely
+    {
+        std::lock_guard<std::mutex> lock(sActiveWindowMutex);
+        if (sActiveWindow == this)
+            sActiveWindow = nullptr;
+    }
 }
 
 // ── Show ─────────────────────────────────────────────────────────────[...]
@@ -362,10 +379,9 @@ void MainWindow::_LoadModule(const entry_ref& ref)
     BEntry entry(&ref, true);
     BPath sourcePath;
     if (entry.GetPath(&sourcePath) != B_OK) {
-        BAlert* alert = new BAlert("Load Error",
+        (new BAlert("Load Error",
             "Could not resolve the module file path.", "OK",
-            nullptr, nullptr, B_WIDTH_AS_USUAL, B_STOP_ALERT);
-        alert->Go();
+            nullptr, nullptr, B_WIDTH_AS_USUAL, B_STOP_ALERT))->Go();
         return;
     }
 
@@ -444,9 +460,8 @@ void MainWindow::_LoadModule(const entry_ref& ref)
         } catch (const std::exception& e) {
             BString errText = "Could not copy the module to the add-ons folder:\n";
             errText << e.what();
-            BAlert* alert = new BAlert("Copy Error", errText.String(), "OK",
-                nullptr, nullptr, B_WIDTH_AS_USUAL, B_STOP_ALERT);
-            alert->Go();
+            (new BAlert("Copy Error", errText.String(), "OK",
+                nullptr, nullptr, B_WIDTH_AS_USUAL, B_STOP_ALERT))->Go();
             return;
         }
     }
@@ -461,10 +476,9 @@ void MainWindow::_LoadModuleDirect(const char* path, const char* fileName)
     // Load the shared library into memory
     image_id image = load_add_on(path);
     if (image < 0) {
-        BAlert* alert = new BAlert("Load Error",
+        (new BAlert("Load Error",
             "Could not load the selected .so module.", "OK",
-            nullptr, nullptr, B_WIDTH_AS_USUAL, B_STOP_ALERT);
-        alert->Go();
+            nullptr, nullptr, B_WIDTH_AS_USUAL, B_STOP_ALERT))->Go();
         return;
     }
 
@@ -473,10 +487,9 @@ void MainWindow::_LoadModuleDirect(const char* path, const char* fileName)
     if (get_image_symbol(image, "instantiate_module", B_SYMBOL_TYPE_TEXT,
                           (void**)&instantiateFunc) != B_OK || !instantiateFunc) {
         unload_add_on(image);
-        BAlert* alert = new BAlert("Load Error",
+        (new BAlert("Load Error",
             "The module does not export the required 'instantiate_module' symbol.",
-            "OK", nullptr, nullptr, B_WIDTH_AS_USUAL, B_STOP_ALERT);
-        alert->Go();
+            "OK", nullptr, nullptr, B_WIDTH_AS_USUAL, B_STOP_ALERT))->Go();
         return;
     }
 
@@ -484,10 +497,9 @@ void MainWindow::_LoadModuleDirect(const char* path, const char* fileName)
     BaseModule* instance = instantiateFunc();
     if (!instance) {
         unload_add_on(image);
-        BAlert* alert = new BAlert("Load Error",
+        (new BAlert("Load Error",
             "The module factory returned a null instance.", "OK",
-            nullptr, nullptr, B_WIDTH_AS_USUAL, B_STOP_ALERT);
-        alert->Go();
+            nullptr, nullptr, B_WIDTH_AS_USUAL, B_STOP_ALERT))->Go();
         return;
     }
 
@@ -555,24 +567,26 @@ void MainWindow::_LoadModuleDirect(const char* path, const char* fileName)
 void MainWindow::_UnloadModuleByName(const char* name)
 {
     BString fileName(name);
-    for (auto it = fModules.begin(); it != fModules.end(); ++it) {
-        if (it->fileName == fileName) {
-            _UnloadModule(*it, false, nullptr);
-            fModules.erase(it);
-            break;
-        }
+    auto it = std::find_if(fModules.begin(), fModules.end(),
+        [&](const LoadedModule& mod) { return mod.fileName == fileName; });
+    
+    if (it != fModules.end()) {
+        _UnloadModule(*it, false, nullptr);
+        fModules.erase(it);
     }
 }
 
 // ── _UnloadModuleByNode ───────────────────────────────────────────────────────
 void MainWindow::_UnloadModuleByNode(ino_t node, dev_t device)
 {
-    for (auto it = fModules.begin(); it != fModules.end(); ++it) {
-        if (it->nodeRef.node == node && it->nodeRef.device == device) {
-            _UnloadModule(*it, false, nullptr);
-            fModules.erase(it);
-            break;
-        }
+    auto it = std::find_if(fModules.begin(), fModules.end(),
+        [node, device](const LoadedModule& mod) {
+            return mod.nodeRef.node == node && mod.nodeRef.device == device;
+        });
+    
+    if (it != fModules.end()) {
+        _UnloadModule(*it, false, nullptr);
+        fModules.erase(it);
     }
 }
 
@@ -801,10 +815,9 @@ void MainWindow::_DisableModule(BaseModule* module, const char* reason)
         BString alertMsg;
         alertMsg << "Module '" << moduleName << "' was deactivated for safety.\n\n"
                  << "Reason: " << disableReason;
-        BAlert* alert = new BAlert("Module Deactivated", alertMsg.String(), "OK",
-                                    nullptr, nullptr, B_WIDTH_AS_USUAL,
-                                    B_WARNING_ALERT);
-        alert->Go();
+        (new BAlert("Module Deactivated", alertMsg.String(), "OK",
+                    nullptr, nullptr, B_WIDTH_AS_USUAL,
+                    B_WARNING_ALERT))->Go();
         break;
     }
 }
@@ -818,12 +831,19 @@ void MainWindow::_RenameModuleFileDisabled(const BString& fileName)
     filePath.Append(fileName.String());
 
     BEntry entry(filePath.Path());
-    if (entry.InitCheck() != B_OK)
+    if (entry.InitCheck() != B_OK) {
+        fprintf(stderr, "Warning: Could not access module file to rename: %s\n",
+                filePath.Path());
         return;
+    }
 
     BString newName(fileName);
     newName << ".disabled";
-    entry.Rename(newName.String());
+    status_t status = entry.Rename(newName.String());
+    if (status != B_OK) {
+        fprintf(stderr, "Warning: Failed to rename module file %s to %s (error: %s)\n",
+                filePath.Path(), newName.String(), strerror(status));
+    }
 }
 
 // ── _WriteDeactivationLog ─────────────────────────────────────────────────────
@@ -893,13 +913,16 @@ int32 MainWindow::_WatchdogLoop()
     return 0;
 }
 
-// ── _SignalHandler ──────────────────────────────────────────────────────────[...]
+// ── _SignalHandler ──────────────────────────────────────────────��───────────[...]
 // Executed on the UI thread when SIGUSR1 arrives from the watchdog.
 void MainWindow::_SignalHandler(int sig)
 {
     if (sig != SIGUSR1)
         return;
 
+    // Use mutex to safely access sActiveWindow and prevent use-after-free races
+    std::lock_guard<std::mutex> lock(sActiveWindowMutex);
+    
     // Only jump from the correct looper thread to prevent stack corruption
     if (sActiveWindow &&
         sActiveWindow->fCanJump.load() &&
