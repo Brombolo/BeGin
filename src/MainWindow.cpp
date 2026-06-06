@@ -24,7 +24,7 @@
 // ── Static member definition ─────────────────────────────────────────────────
 MainWindow* MainWindow::sActiveWindow = nullptr;
 
-// ── Constructor ──────────────────────────────────────────────────────────────
+// ── Constructor ──────────────────────────────────────────────────────────[...]
 MainWindow::MainWindow()
     : BWindow(BRect(100, 100, 860, 620), "BeGin", B_TITLED_WINDOW,
                B_AUTO_UPDATE_SIZE_LIMITS),
@@ -66,7 +66,7 @@ MainWindow::MainWindow()
     _SelectFirstActiveModule();
 }
 
-// ── Destructor ───────────────────────────────────────────────────────────────
+// ── Destructor ───────────────────────────────────────────────────────────[...]
 MainWindow::~MainWindow()
 {
     // Stop the node monitor before anything else
@@ -83,7 +83,7 @@ MainWindow::~MainWindow()
         sActiveWindow = nullptr;
 }
 
-// ── Show ─────────────────────────────────────────────────────────────────────
+// ── Show ─────────────────────────────────────────────────────────────[...]
 void MainWindow::Show()
 {
     BWindow::Show();
@@ -100,7 +100,7 @@ void MainWindow::Show()
     }
 }
 
-// ── MessageReceived ───────────────────────────────────────────────────────────
+// ── MessageReceived ─────────────────────────────────────────────────────────[...]
 void MainWindow::MessageReceived(BMessage* message)
 {
     switch (message->what) {
@@ -230,7 +230,7 @@ void MainWindow::MessageReceived(BMessage* message)
     }
 }
 
-// ── QuitRequested ─────────────────────────────────────────────────────────────
+// ── QuitRequested ─────────────────────────────────────────────────────────[...]
 bool MainWindow::QuitRequested()
 {
     // Stop the node monitor first to avoid stray messages during shutdown
@@ -246,10 +246,10 @@ bool MainWindow::QuitRequested()
     return true;
 }
 
-// ── _InitInterface ────────────────────────────────────────────────────────────
+// ── _InitInterface ──────────────────────────────────────────────────────────[...]
 void MainWindow::_InitInterface()
 {
-    // ── Menu bar ──────────────────────────────────────────────────────────────
+    // ── Menu bar ──────────────────────────────────────────────────────────[...]
     fMenuBar = new BMenuBar("menubar");
 
     BMenu* fileMenu = new BMenu("File");
@@ -314,7 +314,7 @@ void MainWindow::_InitInterface()
     fMainCardView->AddChild(normalView);   // Card 0
     fMainCardView->AddChild(settingsView); // Card 1
 
-    // ── Window layout ─────────────────────────────────────────────────────────
+    // ── Window layout ─────────────────────────────────────────────────────────[...]
     BLayoutBuilder::Group<>(this, B_VERTICAL, 0)
         .Add(fMenuBar)
         .Add(fWarningBanner)
@@ -354,7 +354,7 @@ void MainWindow::_LoadExistingModules()
     }
 }
 
-// ── _LoadModule ───────────────────────────────────────────────────────────────
+// ── _LoadModule ───────────────────────────────────────────────────────────[...]
 // Handles the full loading pipeline, including version-conflict detection when
 // a file from an external location is being installed into the add-ons folder.
 void MainWindow::_LoadModule(const entry_ref& ref)
@@ -454,7 +454,7 @@ void MainWindow::_LoadModule(const entry_ref& ref)
     _LoadModuleDirect(destPath.Path(), fileName.String());
 }
 
-// ── _LoadModuleDirect ─────────────────────────────────────────────────────────
+// ── _LoadModuleDirect ─────────────────────────────────────────────────────────[...]
 // Loads an add-on from a resolved path and registers it with the UI.
 void MainWindow::_LoadModuleDirect(const char* path, const char* fileName)
 {
@@ -576,7 +576,7 @@ void MainWindow::_UnloadModuleByNode(ino_t node, dev_t device)
     }
 }
 
-// ── _UnloadModule ─────────────────────────────────────────────────────────────
+// ── _UnloadModule ─────────────────────────────────────────────────────────[...]
 void MainWindow::_UnloadModule(LoadedModule& mod, bool dueToError,
                                 const char* /*reason*/)
 {
@@ -613,7 +613,7 @@ void MainWindow::_UnloadModule(LoadedModule& mod, bool dueToError,
     }
 }
 
-// ── _AddModuleToUI ────────────────────────────────────────────────────────────
+// ── _AddModuleToUI ──────────────────────────────────────────────────────────[...]
 void MainWindow::_AddModuleToUI(LoadedModule& loaded)
 {
     BView*   moduleView = loaded.instance->GetInterfaceView();
@@ -657,7 +657,7 @@ void MainWindow::_AddModuleToUI(LoadedModule& loaded)
     loaded.view        = moduleView;
 }
 
-// ── _SelectModule ─────────────────────────────────────────────────────────────
+// ── _SelectModule ─────────────────────────────────────────────────────────[...]
 void MainWindow::_SelectModule(const BString& signature)
 {
     for (const auto& mod : fModules) {
@@ -683,7 +683,7 @@ void MainWindow::_SelectFirstActiveModule()
         fModuleCardView->CardLayout()->SetVisibleItem((int32)0);
 }
 
-// ── DispatchMessage ───────────────────────────────────────────────────────────
+// ── DispatchMessage ─────────────────────────────────────────────────────────[...]
 void MainWindow::DispatchMessage(BMessage* message, BHandler* handler)
 {
     BaseModule* module = _FindModuleForHandler(handler);
@@ -762,7 +762,7 @@ BaseModule* MainWindow::_FindModuleForHandler(BHandler* handler)
     return nullptr;
 }
 
-// ── _DisableModule ────────────────────────────────────────────────────────────
+// ── _DisableModule ──────────────────────────────────────────────────────────[...]
 void MainWindow::_DisableModule(BaseModule* module, const char* reason)
 {
     if (!module)
@@ -855,10 +855,10 @@ void MainWindow::_WriteDeactivationLog(BaseModule* module, const char* reason)
         << "Debugging tips:\n";
 
     BString r(reason);
-    if (r.Contains("Watchdog") || r.Contains("hang")) {
+    if (r.FindFirst("Watchdog") >= 0 || r.FindFirst("hang") >= 0) {
         log << "  * The module is running a blocking operation on the UI thread.\n"
             << "  * Move long-running work to a separate thread (std::thread / BThread).\n";
-    } else if (r.Contains("Exception") || r.Contains("exception")) {
+    } else if (r.FindFirst("Exception") >= 0 || r.FindFirst("exception") >= 0) {
         log << "  * The module threw an unhandled C++ exception.\n"
             << "  * Check memory allocations, null pointer dereferences, and index bounds.\n";
     } else {
@@ -867,13 +867,13 @@ void MainWindow::_WriteDeactivationLog(BaseModule* module, const char* reason)
     log << "========================================\n\n";
 }
 
-// ── _WatchdogEntry ────────────────────────────────────────────────────────────
+// ── _WatchdogEntry ──────────────────────────────────────────────────────────[...]
 int32 MainWindow::_WatchdogEntry(void* data)
 {
     return static_cast<MainWindow*>(data)->_WatchdogLoop();
 }
 
-// ── _WatchdogLoop ─────────────────────────────────────────────────────────────
+// ── _WatchdogLoop ─────────────────────────────────────────────────────────[...]
 int32 MainWindow::_WatchdogLoop()
 {
     while (fWatchdogRunning.load()) {
@@ -893,7 +893,7 @@ int32 MainWindow::_WatchdogLoop()
     return 0;
 }
 
-// ── _SignalHandler ────────────────────────────────────────────────────────────
+// ── _SignalHandler ──────────────────────────────────────────────────────────[...]
 // Executed on the UI thread when SIGUSR1 arrives from the watchdog.
 void MainWindow::_SignalHandler(int sig)
 {
