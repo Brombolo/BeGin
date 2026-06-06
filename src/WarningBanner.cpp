@@ -72,9 +72,9 @@ void WarningBanner::AddDeactivatedModule(const char* name, const char* reason)
 {
     BString shortReason = "Errore";
     BString reasonStr(reason);
-    if (reasonStr.Contains("Watchdog") || reasonStr.Contains("UI bloccato")) {
+    if (reasonStr.FindFirst("Watchdog") >= 0 || reasonStr.FindFirst("UI bloccato") >= 0) {
         shortReason = "Blocco";
-    } else if (reasonStr.Contains("Eccezione")) {
+    } else if (reasonStr.FindFirst("Eccezione") >= 0) {
         shortReason = "Eccezione";
     }
 
