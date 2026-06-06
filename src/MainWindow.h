@@ -14,6 +14,7 @@
 #include <vector>
 #include <atomic>
 #include <setjmp.h>
+#include <mutex>
 
 #include "BaseModule.h"
 #include "EmptyView.h"
@@ -86,7 +87,7 @@ private:
     // POSIX signal handler
     static void _SignalHandler(int sig);
 
-    // ── UI widgets ──────────────────────────────────────────────────────────
+    // ── UI widgets ─────────────────────────────────────────────────────────
     BMenuBar*             fMenuBar;        // Main menu bar (File | ⚙)
     WarningBanner*        fWarningBanner;
 
@@ -101,7 +102,7 @@ private:
     // Settings overlay elements
     ModuleManagementView* fModuleManagementView;
 
-    // ── State ───────────────────────────────────────────────────────────────
+    // ── State ────────────────────────────────────────────────────────────
     std::vector<LoadedModule> fModules;
 
     // Node Monitor – watches the add-ons directory for live file changes
@@ -119,7 +120,9 @@ private:
     std::atomic<bool>       fCanJump;
 
     // Static back-pointer used inside the POSIX signal handler
+    // Protected by a mutex to prevent use-after-free races
     static MainWindow* sActiveWindow;
+    static std::mutex  sActiveWindowMutex;
 };
 
 #endif // MAIN_WINDOW_H
