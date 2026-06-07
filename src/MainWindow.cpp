@@ -247,7 +247,7 @@ void MainWindow::MessageReceived(BMessage* message)
     }
 }
 
-// ── QuitRequested ─────────────────────────────────────────────────────────[...]
+// ── QuitRequested ─────────────────────────────────────────────────────��───[...]
 bool MainWindow::QuitRequested()
 {
     // Stop the node monitor first to avoid stray messages during shutdown
@@ -590,6 +590,22 @@ void MainWindow::_UnloadModuleByNode(ino_t node, dev_t device)
     }
 }
 
+// ── DisableModuleByName ─────────────────────────────────────────────────────
+// Public method: called by ModuleManagementView when user disables a module
+void MainWindow::DisableModuleByName(const char* name)
+{
+    BString fileName(name);
+    auto it = std::find_if(fModules.begin(), fModules.end(),
+        [&](const LoadedModule& mod) { return mod.fileName == fileName; });
+    
+    if (it != fModules.end()) {
+        BaseModule* module = it->instance;
+        if (module && !it->disabled) {
+            _DisableModule(module, "User disabled module from settings");
+        }
+    }
+}
+
 // ── _UnloadModule ─────────────────────────────────────────────────────────[...]
 void MainWindow::_UnloadModule(LoadedModule& mod, bool dueToError,
                                 const char* /*reason*/)
@@ -913,7 +929,7 @@ int32 MainWindow::_WatchdogLoop()
     return 0;
 }
 
-// ── _SignalHandler ──────────────────────────────────────────────��───────────[...]
+// ── _SignalHandler ──────────────────────────────────────────────────────────[...]
 // Executed on the UI thread when SIGUSR1 arrives from the watchdog.
 void MainWindow::_SignalHandler(int sig)
 {
