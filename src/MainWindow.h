@@ -54,8 +54,9 @@ public:
     virtual void Show() override;
 
     // Public wrappers used by ModuleManagementView
-    void LoadModule(const entry_ref& ref)    { _LoadModule(ref); }
+    void LoadModule(const entry_ref& ref)     { _LoadModule(ref); }
     void UnloadModuleByName(const char* name) { _UnloadModuleByName(name); }
+    void DisableModuleByName(const char* name); // Disable and unload from UI
 
 private:
     // Initialisation helpers
