@@ -22,7 +22,7 @@ enum {
     MSG_OPEN_LOAD_PANEL = 'olpn',
 };
 
-// ── Constructor ───────────────────────────────────────────────────────────────
+// ── Constructor ──────────────────────────────────────────────────────────[...]
 ModuleManagementView::ModuleManagementView(MainWindow* parent)
     : BView("Module Management", B_WILL_DRAW),
       fParent(parent),
@@ -42,13 +42,13 @@ ModuleManagementView::ModuleManagementView(MainWindow* parent)
     _InitInterface();
 }
 
-// ── Destructor ────────────────────────────────────────────────────────────────
+// ── Destructor ──────────────────────────────────────────────────────────[...]
 ModuleManagementView::~ModuleManagementView()
 {
     delete fFilePanel;
 }
 
-// ── AttachedToWindow ──────────────────────────────────────────────────────────
+// ── AttachedToWindow ────────────────────────────────────────────────────────[...]
 void ModuleManagementView::AttachedToWindow()
 {
     BView::AttachedToWindow();
@@ -60,7 +60,7 @@ void ModuleManagementView::AttachedToWindow()
     ScanModules();
 }
 
-// ── MessageReceived ───────────────────────────────────────────────────────────
+// ── MessageReceived ────────────────────────────────────────────────────────[...]
 void ModuleManagementView::MessageReceived(BMessage* message)
 {
     switch (message->what) {
@@ -101,7 +101,7 @@ void ModuleManagementView::MessageReceived(BMessage* message)
     }
 }
 
-// ── ScanModules ───────────────────────────────────────────────────────────────
+// ── ScanModules ─────────────────────────────────────────────────────────[...]
 void ModuleManagementView::ScanModules()
 {
     if (!LockLooper())
@@ -149,7 +149,7 @@ void ModuleManagementView::ScanModules()
     UnlockLooper();
 }
 
-// ── _InitInterface ────────────────────────────────────────────────────────────
+// ── _InitInterface ──────────────────────────────────────────────────────[...]
 void ModuleManagementView::_InitInterface()
 {
     SetViewColor(ui_color(B_PANEL_BACKGROUND_COLOR));
@@ -219,7 +219,7 @@ void ModuleManagementView::_InitInterface()
         .End();
 }
 
-// ── _ReadModuleVersion ────────────────────────────────────────────────────────
+// ── _ReadModuleVersion ───────────────────────────────────────────────────────[...]
 // Temporarily loads a .so (or .so.disabled) to read the version string.
 BString ModuleManagementView::_ReadModuleVersion(const entry_ref& ref,
                                                    bool /*isActive*/)
@@ -247,7 +247,7 @@ BString ModuleManagementView::_ReadModuleVersion(const entry_ref& ref,
     return version;
 }
 
-// ── _UpdateDetails ────────────────────────────────────────────────────────────
+// ── _UpdateDetails ──────────────────────────────────────────────────────[...]
 void ModuleManagementView::_UpdateDetails()
 {
     int32 sel = fListView->CurrentSelection();
@@ -287,7 +287,7 @@ void ModuleManagementView::_UpdateDetails()
     fDeleteBtn->SetEnabled(true);
 }
 
-// ── _ToggleModule ─────────────────────────────────────────────────────────────
+// ── _ToggleModule ─────────────────────────────────────────────────────────[...]
 void ModuleManagementView::_ToggleModule()
 {
     int32 sel = fListView->CurrentSelection();
@@ -299,12 +299,18 @@ void ModuleManagementView::_ToggleModule()
     if (entry.InitCheck() != B_OK)
         return;
 
+    BString oldName = item.fileName;
     BString newName = item.fileName;
+    
     if (item.isActive) {
-        // Disable: add .disabled suffix
+        // User wants to DISABLE: unload first, THEN rename
+        fParent->DisableModuleByName(oldName.String());
+        
+        // Rename the file to .so.disabled
         newName << ".disabled";
     } else {
-        // Enable: remove .disabled suffix
+        // User wants to ENABLE: rename first, THEN load
+        // Remove .disabled suffix
         if (newName.EndsWith(".so.disabled"))
             newName.Truncate(newName.Length() - 9); // Remove ".disabled" (9 chars)
     }
@@ -320,6 +326,23 @@ void ModuleManagementView::_ToggleModule()
         return;
     }
 
+    // If enabling, load the newly renamed module
+    if (!item.isActive) {
+        // Update entry_ref to point to the renamed file
+        BPath dir = _GetAddonsDirectory();
+        BEntry newEntry(dir.Path());
+        newEntry.GetParent(&newEntry);
+        entry_ref newRef;
+        newEntry.GetRef(&newRef);
+        
+        // Get the new ref for the renamed file
+        BDirectory parentDir(&newEntry);
+        parentDir.FindEntry(newName.String(), &newEntry);
+        newEntry.GetRef(&newRef);
+        
+        fParent->LoadModule(newRef);
+    }
+
     ScanModules();
 
     // Restore selection
@@ -331,7 +354,7 @@ void ModuleManagementView::_ToggleModule()
     }
 }
 
-// ── _ReloadModule ─────────────────────────────────────────────────────────────
+// ── _ReloadModule ─────────────────────────────────────────────────────────[...]
 void ModuleManagementView::_ReloadModule()
 {
     int32 sel = fListView->CurrentSelection();
@@ -356,7 +379,7 @@ void ModuleManagementView::_ReloadModule()
     }
 }
 
-// ── _DeleteModule ─────────────────────────────────────────────────────────────
+// ── _DeleteModule ─────────────────────────────────────────────────────────[...]
 void ModuleManagementView::_DeleteModule()
 {
     int32 sel = fListView->CurrentSelection();
@@ -374,6 +397,7 @@ void ModuleManagementView::_DeleteModule()
     if (alert->Go() != 1)
         return;
 
+    // If the module is active, unload it first
     if (item.isActive)
         fParent->UnloadModuleByName(item.fileName.String());
 
@@ -391,7 +415,7 @@ void ModuleManagementView::_DeleteModule()
     ScanModules();
 }
 
-// ── _LoadModule ───────────────────────────────────────────────────────────────
+// ── _LoadModule ─────────────────────────────────────────────────────────[...]
 void ModuleManagementView::_LoadModule()
 {
     if (!fFilePanel) {
@@ -401,4 +425,13 @@ void ModuleManagementView::_LoadModule()
                                      new BMessage(MSG_PANEL_LOAD_REF));
     }
     fFilePanel->Show();
+}
+
+// ── _GetAddonsDirectory ─────────────────────────────────────────────────────[...]
+BPath ModuleManagementView::_GetAddonsDirectory()
+{
+    BPath path;
+    if (find_directory(B_USER_SETTINGS_DIRECTORY, &path) == B_OK)
+        path.Append("BeGin/add-ons");
+    return path;
 }
