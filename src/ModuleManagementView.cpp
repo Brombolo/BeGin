@@ -301,51 +301,57 @@ void ModuleManagementView::_ToggleModule()
 
     BString oldName = item.fileName;
     BString newName = item.fileName;
-    
+
     if (item.isActive) {
-        // User wants to DISABLE: unload first, THEN rename
-        fParent->DisableModuleByName(oldName.String());
-        
-        // Rename the file to .so.disabled
+        // Manual disable: silently unload from memory.
+        // Do NOT call DisableModuleByName() — that shows "deactivated for safety"
+        // alerts and banners intended for watchdog/error cases only.
+        // UnloadModuleByName() removes the UI and unloads the library with no popups.
+        fParent->UnloadModuleByName(oldName.String());
+
+        // Rename .so → .so.disabled
         newName << ".disabled";
+        status_t err = entry.Rename(newName.String());
+        if (err != B_OK) {
+            BString errText("Failed to rename the module file:\n");
+            errText << strerror(err);
+            (new BAlert("Rename Error", errText.String(), "OK",
+                nullptr, nullptr, B_WIDTH_AS_USUAL, B_STOP_ALERT))->Go();
+            return;
+        }
+
     } else {
-        // User wants to ENABLE: rename first, THEN load
-        // Remove .disabled suffix
+        // Manual enable: rename .so.disabled → .so first, then load.
         if (newName.EndsWith(".so.disabled"))
             newName.Truncate(newName.Length() - 9); // Remove ".disabled" (9 chars)
-    }
 
-    status_t err = entry.Rename(newName.String());
-    if (err != B_OK) {
-        BString errText("Failed to rename the module file:\n");
-        errText << strerror(err);
-        BAlert* alert = new BAlert("Rename Error", errText.String(), "OK",
-                                    nullptr, nullptr, B_WIDTH_AS_USUAL,
-                                    B_STOP_ALERT);
-        alert->Go();
-        return;
-    }
+        status_t err = entry.Rename(newName.String());
+        if (err != B_OK) {
+            BString errText("Failed to rename the module file:\n");
+            errText << strerror(err);
+            (new BAlert("Rename Error", errText.String(), "OK",
+                nullptr, nullptr, B_WIDTH_AS_USUAL, B_STOP_ALERT))->Go();
+            return;
+        }
 
-    // If enabling, load the newly renamed module
-    if (!item.isActive) {
-        // Update entry_ref to point to the renamed file
-        BPath dir = _GetAddonsDirectory();
-        BEntry newEntry(dir.Path());
-        newEntry.GetParent(&newEntry);
-        entry_ref newRef;
-        newEntry.GetRef(&newRef);
-        
-        // Get the new ref for the renamed file
-        BDirectory parentDir(&newEntry);
-        parentDir.FindEntry(newName.String(), &newEntry);
-        newEntry.GetRef(&newRef);
-        
-        fParent->LoadModule(newRef);
+        // Build the correct entry_ref for the renamed file inside the add-ons dir.
+        // The previous code incorrectly called GetParent() on the directory entry,
+        // navigating one level up and causing a copy-from-directory error.
+        BPath addOnsPath = _GetAddonsDirectory();
+        BDirectory addOnsDir(addOnsPath.Path());
+        BEntry renamedEntry;
+        if (addOnsDir.FindEntry(newName.String(), &renamedEntry) == B_OK) {
+            entry_ref newRef;
+            renamedEntry.GetRef(&newRef);
+            // LoadModule detects the file is already in the add-ons directory
+            // (source path == destination path) and skips the copy step.
+            fParent->LoadModule(newRef);
+        }
     }
 
     ScanModules();
 
-    // Restore selection
+    // Restore selection to the toggled item
     for (size_t i = 0; i < fModuleFiles.size(); ++i) {
         if (fModuleFiles[i].fileName == newName) {
             fListView->Select((int32)i);

@@ -70,12 +70,13 @@ void WarningBanner::MessageReceived(BMessage* message)
 
 void WarningBanner::AddDeactivatedModule(const char* name, const char* reason)
 {
-    BString shortReason = "Errore";
+    // Classify the deactivation reason into a short English label
+    BString shortReason = "Error";
     BString reasonStr(reason);
-    if (reasonStr.FindFirst("Watchdog") >= 0 || reasonStr.FindFirst("UI bloccato") >= 0) {
-        shortReason = "Blocco";
-    } else if (reasonStr.FindFirst("Eccezione") >= 0) {
-        shortReason = "Eccezione";
+    if (reasonStr.FindFirst("Watchdog") >= 0 || reasonStr.FindFirst("hang") >= 0) {
+        shortReason = "Hang";
+    } else if (reasonStr.FindFirst("Exception") >= 0 || reasonStr.FindFirst("exception") >= 0) {
+        shortReason = "Exception";
     }
 
     BString item;
@@ -83,10 +84,9 @@ void WarningBanner::AddDeactivatedModule(const char* name, const char* reason)
     fDeactivatedNames.push_back(item);
 
     _UpdateText();
-    
-    if (IsHidden()) {
+
+    if (IsHidden())
         Show();
-    }
 }
 
 void WarningBanner::Clear()
@@ -105,14 +105,14 @@ void WarningBanner::_UpdateText()
         return;
     }
 
-    BString text = "DISATTIVATI: ";
+    BString text = "DEACTIVATED: ";
     for (size_t i = 0; i < fDeactivatedNames.size(); ++i) {
         if (i > 0) text << ", ";
         text << fDeactivatedNames[i];
     }
     fTextView->SetText(text.String());
-    
-    // Reset colors after setting text (required for BTextView)
+
+    // Reset text color after SetText (required by BTextView)
     rgb_color white = {255, 255, 255, 255};
     fTextView->SetFontAndColor(nullptr, 0, &white);
 }
