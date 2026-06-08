@@ -45,6 +45,7 @@ private:
 
     // Temporarily loads an add-on to read its version string
     BString _ReadModuleVersion(const entry_ref& ref, bool isActive);
+    BPath   _GetAddonsDirectory();
 
     MainWindow*  fParent;
     BListView*   fListView;
