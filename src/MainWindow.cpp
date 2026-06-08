@@ -266,21 +266,26 @@ bool MainWindow::QuitRequested()
 // ── _InitInterface ──────────────────────────────────────────────────────────[...]
 void MainWindow::_InitInterface()
 {
-    // ── Menu bar ──────────────────────────────────────────────────────────[...]
+    // ── Menu bars ─────────────────────────────────────────────────────────
     fMenuBar = new BMenuBar("menubar");
 
     BMenu* fileMenu = new BMenu("File");
     fileMenu->AddItem(new BMenuItem("Quit", new BMessage(MSG_FILE_EXIT), 'Q'));
     fMenuBar->AddItem(fileMenu);
 
-    // Spacer so the gear sits flush against the right edge
-    fMenuBar->AddItem(new BMenuBar("spacer_menu"));
-
-    // Gear (⚙) settings button — opens the settings overlay
+    // Gear (⚙) settings menu, aligned to the right
+    BMenuBar* gearMenuBar = new BMenuBar("gear_menubar");
     BMenu* gearMenu = new BMenu("\xe2\x9a\x99"); // UTF-8 for ⚙
-    gearMenu->AddItem(new BMenuItem("Settings...",
+    gearMenu->AddItem(new BMenuItem("Preferences",
                                     new BMessage(MSG_SHOW_SETTINGS), ','));
-    fMenuBar->AddItem(gearMenu);
+    gearMenuBar->AddItem(gearMenu);
+
+    BView* topMenuGroup = new BView("top_menu_group", 0);
+    BLayoutBuilder::Group<>(topMenuGroup, B_HORIZONTAL, 0)
+        .Add(fMenuBar)
+        .AddGlue()
+        .Add(gearMenuBar)
+        .End();
 
     // ── Warning banner (hidden until a module is deactivated) ─────────────────
     fWarningBanner = new WarningBanner("warning_banner");
@@ -333,7 +338,7 @@ void MainWindow::_InitInterface()
 
     // ── Window layout ─────────────────────────────────────────────────────────[...]
     BLayoutBuilder::Group<>(this, B_VERTICAL, 0)
-        .Add(fMenuBar)
+        .Add(topMenuGroup)
         .Add(fWarningBanner)
         .Add(fMainCardView, 1.0f)
         .End();
@@ -624,9 +629,15 @@ void MainWindow::_UnloadModule(LoadedModule& mod, bool dueToError,
 
     // 3. Remove and destroy the sidebar button box
     if (mod.sidebarView) {
-        fSidebarView->RemoveChild(mod.sidebarView);
+        if (fSidebarView->GroupLayout()) {
+            fSidebarView->GroupLayout()->RemoveView(mod.sidebarView);
+        } else {
+            fSidebarView->RemoveChild(mod.sidebarView);
+        }
         delete mod.sidebarView;
         mod.sidebarView = nullptr;
+        fSidebarView->InvalidateLayout();
+        fSidebarView->Invalidate();
     }
 
     // 4. Deregister the BHandler and free the module object
@@ -685,6 +696,9 @@ void MainWindow::_AddModuleToUI(LoadedModule& loaded)
     loaded.cardIndex  = fModuleCardView->CountChildren() - 1;
     loaded.sidebarView = moduleBox;
     loaded.view        = moduleView;
+
+    fSidebarView->InvalidateLayout();
+    fSidebarView->Invalidate();
 }
 
 // ── _SelectModule ─────────────────────────────────────────────────────────[...]
