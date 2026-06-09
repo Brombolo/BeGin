@@ -125,7 +125,7 @@ private:
     // Static back-pointer used inside the POSIX signal handler
     // Protected by a mutex to prevent use-after-free races
     static MainWindow* sActiveWindow;
-    static std::mutex  sActiveWindowMutex;
+    static std::mutex* sActiveWindowMutex;
 };
 
 #endif // MAIN_WINDOW_H

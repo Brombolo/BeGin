@@ -24,7 +24,7 @@
 
 // ── Static member definition ─────────────────────────────────────────────────
 MainWindow* MainWindow::sActiveWindow = nullptr;
-std::mutex  MainWindow::sActiveWindowMutex;
+std::mutex* MainWindow::sActiveWindowMutex = new std::mutex();
 
 // ── Constructor ──────────────────────────────────────────────────────────[...]
 MainWindow::MainWindow()
@@ -49,7 +49,7 @@ MainWindow::MainWindow()
 
     // Register static back-pointer (must be before signal handler registration)
     {
-        std::lock_guard<std::mutex> lock(sActiveWindowMutex);
+        std::lock_guard<std::mutex> lock(*sActiveWindowMutex);
         sActiveWindow = this;
     }
 
@@ -95,7 +95,7 @@ MainWindow::~MainWindow()
 
     // Clear static back-pointer safely
     {
-        std::lock_guard<std::mutex> lock(sActiveWindowMutex);
+        std::lock_guard<std::mutex> lock(*sActiveWindowMutex);
         if (sActiveWindow == this)
             sActiveWindow = nullptr;
     }
@@ -196,8 +196,10 @@ void MainWindow::MessageReceived(BMessage* message)
                 dev_t device;
                 ino_t node;
                 if (message->FindInt32("device", &device) == B_OK &&
-                    message->FindInt64("node", &node) == B_OK)
+                    message->FindInt64("node", &node) == B_OK) {
+                    printf("B_ENTRY_REMOVED node=%lld\n", node);
                     _UnloadModuleByNode(node, device);
+                }
 
             } else if (opcode == B_ENTRY_MOVED) {
                 dev_t device;
@@ -214,6 +216,8 @@ void MainWindow::MessageReceived(BMessage* message)
                     bool toWatched   = (device == fModulesDirNodeRef.device &&
                                         toDir   == fModulesDirNodeRef.node);
                     BString filename(name);
+                    
+                    printf("B_ENTRY_MOVED name=%s node=%lld fromWatched=%d toWatched=%d\n", name, node, fromWatched, toWatched);
 
                     if (fromWatched && !toWatched) {
                         // File moved OUT of add-ons directory
@@ -523,6 +527,8 @@ void MainWindow::_LoadModuleDirect(const char* path, const char* fileName)
     if (destEntry.GetNodeRef(&nodeRef) != B_OK)
         memset(&nodeRef, 0, sizeof(nodeRef));
 
+    printf("_LoadModuleDirect loaded file %s with node=%lld\n", fileName, nodeRef.node);
+
     BString fileNameStr(fileName);
     BString signature(instance->Signature());
 
@@ -593,16 +599,20 @@ void MainWindow::_UnloadModuleByName(const char* name)
 // ── _UnloadModuleByNode ───────────────────────────────────────────────────────
 void MainWindow::_UnloadModuleByNode(ino_t node, dev_t device)
 {
+    printf("_UnloadModuleByNode called for node=%lld\n", node);
     auto it = std::find_if(fModules.begin(), fModules.end(),
         [node, device](const LoadedModule& mod) {
             return mod.nodeRef.node == node && mod.nodeRef.device == device;
         });
     
     if (it != fModules.end()) {
+        printf(" -> Found module to unload: %s\n", it->fileName.String());
         _UnloadModule(*it, false, nullptr);
         fModules.erase(it);
         _UpdateCardIndices();
         _SelectFirstActiveModule();
+    } else {
+        printf(" -> Module not found for unload!\n");
     }
 }
 
@@ -980,7 +990,7 @@ void MainWindow::_SignalHandler(int sig)
         return;
 
     // Use mutex to safely access sActiveWindow and prevent use-after-free races
-    std::lock_guard<std::mutex> lock(sActiveWindowMutex);
+    std::lock_guard<std::mutex> lock(*sActiveWindowMutex);
     
     // Only jump from the correct looper thread to prevent stack corruption
     if (sActiveWindow &&
