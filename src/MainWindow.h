@@ -26,6 +26,7 @@ enum {
     MSG_SELECT_MODULE       = 'slmd',
     MSG_SHOW_SETTINGS       = 'sset',  // Open the settings overlay
     MSG_HIDE_SETTINGS       = 'hdst',  // Close settings and return to main view
+    MSG_DELAYED_LOAD        = 'dlld',  // Delayed load for newly copied files
 };
 
 class ModuleManagementView;
@@ -74,6 +75,7 @@ private:
     void  _AddModuleToUI(LoadedModule& loaded);
     void  _SelectModule(const BString& signature);
     void  _SelectFirstActiveModule();
+    void  _UpdateCardIndices();
 
     // Fault tolerance helpers
     BaseModule* _FindModuleForHandler(BHandler* handler);

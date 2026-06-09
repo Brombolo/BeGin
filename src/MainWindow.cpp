@@ -183,7 +183,10 @@ void MainWindow::MessageReceived(BMessage* message)
                     BString filename(name);
                     if (filename.EndsWith(".so")) {
                         entry_ref ref(device, directory, name);
-                        _LoadModule(ref);
+                        BMessage delayedMsg(MSG_DELAYED_LOAD);
+                        delayedMsg.AddRef("ref", &ref);
+                        // Delay 500ms to allow Tracker to finish writing the copied file
+                        BMessageRunner::StartSending(this, &delayedMsg, 500000, 1);
                     }
                 }
 
@@ -241,6 +244,15 @@ void MainWindow::MessageReceived(BMessage* message)
             break;
         }
 
+        case MSG_DELAYED_LOAD:
+        {
+            entry_ref ref;
+            if (message->FindRef("ref", &ref) == B_OK) {
+                _LoadModule(ref);
+            }
+            break;
+        }
+
         default:
             BWindow::MessageReceived(message);
             break;
@@ -266,26 +278,22 @@ bool MainWindow::QuitRequested()
 // ── _InitInterface ──────────────────────────────────────────────────────────[...]
 void MainWindow::_InitInterface()
 {
-    // ── Menu bars ─────────────────────────────────────────────────────────
+    // ── Menu bar ─────────────────────────────────────────────────────────
     fMenuBar = new BMenuBar("menubar");
 
     BMenu* fileMenu = new BMenu("File");
     fileMenu->AddItem(new BMenuItem("Quit", new BMessage(MSG_FILE_EXIT), 'Q'));
     fMenuBar->AddItem(fileMenu);
 
-    // Gear (⚙) settings menu, aligned to the right
-    BMenuBar* gearMenuBar = new BMenuBar("gear_menubar");
+    // Gear (⚙) settings menu
     BMenu* gearMenu = new BMenu("\xe2\x9a\x99"); // UTF-8 for ⚙
-    gearMenu->AddItem(new BMenuItem("Preferences",
-                                    new BMessage(MSG_SHOW_SETTINGS), ','));
-    gearMenuBar->AddItem(gearMenu);
-
-    BView* topMenuGroup = new BView("top_menu_group", 0);
-    BLayoutBuilder::Group<>(topMenuGroup, B_HORIZONTAL, 0)
-        .Add(fMenuBar)
-        .AddGlue()
-        .Add(gearMenuBar)
-        .End();
+    gearMenu->AddItem(new BMenuItem("Settings...", new BMessage(MSG_SHOW_SETTINGS), ','));
+    
+    // Preferences submenu as requested
+    BMenu* prefsMenu = new BMenu("Preferences");
+    gearMenu->AddItem(prefsMenu);
+    
+    fMenuBar->AddItem(gearMenu);
 
     // ── Warning banner (hidden until a module is deactivated) ─────────────────
     fWarningBanner = new WarningBanner("warning_banner");
@@ -336,9 +344,9 @@ void MainWindow::_InitInterface()
     fMainCardView->AddChild(normalView);   // Card 0
     fMainCardView->AddChild(settingsView); // Card 1
 
-    // ── Window layout ─────────────────────────────────────────────────────────[...]
+    // ── Window layout ─────────────────────────────────────────────────────────
     BLayoutBuilder::Group<>(this, B_VERTICAL, 0)
-        .Add(topMenuGroup)
+        .Add(fMenuBar)
         .Add(fWarningBanner)
         .Add(fMainCardView, 1.0f)
         .End();
@@ -592,6 +600,8 @@ void MainWindow::_UnloadModuleByNode(ino_t node, dev_t device)
     if (it != fModules.end()) {
         _UnloadModule(*it, false, nullptr);
         fModules.erase(it);
+        _UpdateCardIndices();
+        _SelectFirstActiveModule();
     }
 }
 
@@ -725,6 +735,21 @@ void MainWindow::_SelectFirstActiveModule()
     // No active module: show the empty placeholder
     if (fModuleCardView->CardLayout())
         fModuleCardView->CardLayout()->SetVisibleItem((int32)0);
+}
+
+// ── _UpdateCardIndices ────────────────────────────────────────────────────────
+void MainWindow::_UpdateCardIndices()
+{
+    if (!fModuleCardView) return;
+    
+    for (auto& mod : fModules) {
+        if (mod.view) {
+            int32 index = fModuleCardView->IndexOf(mod.view);
+            if (index >= 0) {
+                mod.cardIndex = index;
+            }
+        }
+    }
 }
 
 // ── DispatchMessage ─────────────────────────────────────────────────────────[...]
