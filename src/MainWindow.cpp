@@ -7,6 +7,7 @@
 #include <Button.h>
 #include <CardLayout.h>
 #include <LayoutBuilder.h>
+#include <MessageRunner.h>
 #include <SpaceLayoutItem.h>
 #include <TabView.h>
 #include <FindDirectory.h>
@@ -744,9 +745,12 @@ void MainWindow::_UpdateCardIndices()
     
     for (auto& mod : fModules) {
         if (mod.view) {
-            int32 index = fModuleCardView->IndexOf(mod.view);
-            if (index >= 0) {
-                mod.cardIndex = index;
+            int32 count = fModuleCardView->CountChildren();
+            for (int32 i = 0; i < count; i++) {
+                if (fModuleCardView->ChildAt(i) == mod.view) {
+                    mod.cardIndex = i;
+                    break;
+                }
             }
         }
     }
